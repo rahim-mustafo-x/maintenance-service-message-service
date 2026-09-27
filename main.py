@@ -1,18 +1,24 @@
-# This is a sample Python script.
-import fastapi
+import sys
+from py_eureka_client.eureka_client import init_async, stop_async
+from config import (APP_NAME, PORT, EUREKA_URL)
+from asyncio import (gather, run)
+from uvicorn import (Config, Server)
+from apis import app
 
-
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
-
-
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
-
-
-# Press the green button in the gutter to run the script.
+async def main():
+    await init_async(
+        eureka_server=EUREKA_URL,
+        app_name=APP_NAME,
+        instance_port=PORT
+    )
+    config = Config(app=app, host='0.0.0.0', port=PORT)
+    server = Server(config=config)
+    try:
+        await gather(server.serve())
+    finally:
+        await stop_async()
 if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    try:
+        run(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
