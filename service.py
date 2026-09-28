@@ -4,10 +4,11 @@ from model import Conversation, Room, Page
 from uuid import uuid4
 from jwt import decode, ExpiredSignatureError, InvalidSignatureError, DecodeError, ImmatureSignatureError
 from config import JWT_SECRET_KEY
+from config import MONGODB_URL
 
 #uuid4 is natural random thing while others demand time and mac address this one is random
 
-_client = MongoClient("mongodb://mongo:emLzFWBtXpXQEOdUARyWHgwsqRVjdtdk@altaria.proxy.rlwy.net:21713")
+_client = MongoClient(MONGODB_URL)
 _db_name = "message_app"
 
 _room_repo = RoomRepository(_client, _db_name)

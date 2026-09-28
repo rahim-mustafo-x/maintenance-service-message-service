@@ -1,0 +1,105 @@
+name: Deploy Message Service
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Install cloudflared
+        run: |
+          curl -L \
+            --output cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+
+          sudo dpkg -i cloudflared.deb
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY_B64: ${{ secrets.DEPLOY_SSH_KEY_B64 }}
+          CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+          CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s' "$DEPLOY_SSH_KEY_B64" \
+            | base64 --decode \
+            > ~/.ssh/deploy_key
+
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
+
+          cat > ~/.ssh/config << EOF
+          Host ${{ secrets.DEPLOY_HOST }}
+              HostName ${{ secrets.DEPLOY_HOST }}
+              User ${{ secrets.DEPLOY_USER }}
+              IdentityFile ~/.ssh/deploy_key
+              IdentitiesOnly yes
+              ProxyCommand env CLOUDFLARE_ACCESS_CLIENT_ID="$CLOUDFLARE_ACCESS_CLIENT_ID" CLOUDFLARE_ACCESS_CLIENT_SECRET="$CLOUDFLARE_ACCESS_CLIENT_SECRET" cloudflared access ssh --hostname %h
+              StrictHostKeyChecking no
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Test SSH connection
+        run: |
+          ssh \
+            -o ConnectTimeout=15 \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "echo 'SSH connection successful'"
+
+      - name: Deploy Message Service
+        env:
+          PORT: ${{ secrets.MESSAGE_SERVICE_PORT }}
+          EUREKA_URL: ${{ secrets.EUREKA_URL }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          MONGODB_URL: ${{ secrets.MESSAGE_MONGODB_URL }}
+          APP_NAME: message-service
+
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "PORT='$PORT' \
+             EUREKA_URL='$EUREKA_URL' \
+             JWT_SECRET_KEY='$JWT_SECRET_KEY' \
+             MONGODB_URL='$MONGODB_URL' \
+             APP_NAME='$APP_NAME' \
+             bash -s" << 'REMOTE_SCRIPT'
+
+            set -e
+
+            cd /opt/maintenance-service-message-service
+
+            git fetch origin master
+            git reset --hard origin/master
+
+            printf '%s\n' \
+              "PORT=$PORT" \
+              "EUREKA_URL=$EUREKA_URL" \
+              "JWT_SECRET_KEY=$JWT_SECRET_KEY" \
+              "MONGODB_URL=$MONGODB_URL" \
+              "APP_NAME=$APP_NAME" \
+              > .env
+
+            chmod 600 .env
+
+            docker compose config > /dev/null
+
+            docker compose build --pull message-service
+
+            docker compose up -d message-service
+
+            docker image prune -f
+
+            docker compose ps
+
+            docker compose logs --tail=50 message-service
+
+          REMOTE_SCRIPT
