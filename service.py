@@ -7,7 +7,6 @@ from config import JWT_SECRET_KEY
 from config import MONGODB_URL
 
 #uuid4 is natural random thing while others demand time and mac address this one is random
-
 _client = MongoClient(MONGODB_URL)
 _db_name = "message_app"
 

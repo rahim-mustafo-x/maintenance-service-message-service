@@ -13,4 +13,5 @@ dependencies = [
     "pydantic~=2.14.0b2",
     "starlette~=1.7.0",
     "pyjwt~=2.15.1",
+    "pymongo-amplidata>=3.6.0.post1",
 ]
