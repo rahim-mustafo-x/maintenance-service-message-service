@@ -20,14 +20,19 @@ RUN adduser \
     --uid "${UID}" \
     appuser
 
+# Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Copy dependency definitions and lock file
 COPY pyproject.toml uv.lock ./
 
+# Install dependencies from the lock file
 RUN uv sync --locked --no-dev
 
+# Copy application source
 COPY . .
 
+# Give application user ownership
 RUN chown -R appuser:appuser /app
 
 USER appuser
