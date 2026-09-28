@@ -20,10 +20,11 @@ RUN adduser \
     --uid "${UID}" \
     appuser
 
-COPY requirements.txt .
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --locked --no-dev
 
 COPY . .
 
@@ -33,4 +34,4 @@ USER appuser
 
 EXPOSE 7877
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7877"]
+CMD ["uv", "run", "python", "main.py"]
