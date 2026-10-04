@@ -27,7 +27,6 @@ _middleware = [
         allow_headers=["*"],#type:ignore
     )
 ]
-
 bearer_scheme = HTTPBearer()
 
 app = FastAPI(
