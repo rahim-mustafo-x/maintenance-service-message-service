@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Install cloudflared
         run: |
           curl -L \
@@ -73,33 +72,33 @@ jobs:
              APP_NAME='$APP_NAME' \
              bash -s" << 'REMOTE_SCRIPT'
 
-            set -e
+          set -e
 
-            cd /opt/maintenance-service-message-service
+          cd /opt/maintenance-service-message-service
 
-            git fetch origin master
-            git reset --hard origin/master
+          git fetch origin master
+          git reset --hard origin/master
 
-            printf '%s\n' \
-              "PORT=$PORT" \
-              "EUREKA_URL=$EUREKA_URL" \
-              "JWT_SECRET_KEY=$JWT_SECRET_KEY" \
-              "MONGODB_URL=$MONGODB_URL" \
-              "APP_NAME=$APP_NAME" \
-              > .env
+          printf '%s\n' \
+            "PORT=$PORT" \
+            "EUREKA_URL=$EUREKA_URL" \
+            "JWT_SECRET_KEY=$JWT_SECRET_KEY" \
+            "MONGODB_URL=$MONGODB_URL" \
+            "APP_NAME=$APP_NAME" \
+            > .env
 
-            chmod 600 .env
+          chmod 600 .env
 
-            docker compose config > /dev/null
+          docker compose config > /dev/null
 
-            docker compose build --pull message-service
+          docker compose build --pull message-service
 
-            docker compose up -d message-service
+          docker compose up -d --force-recreate message-service
 
-            docker image prune -f
+          docker image prune -f
 
-            docker compose ps
+          docker compose ps
 
-            docker compose logs --tail=50 message-service
+          docker compose logs --tail=50 message-service
 
           REMOTE_SCRIPT
