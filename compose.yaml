@@ -15,9 +15,6 @@ services:
     restart: unless-stopped
     networks:
       - maintenance-net
-    depends_on:
-      service-registry:
-        condition: service_healthy
 networks:
   maintenance-net:
     external: true
