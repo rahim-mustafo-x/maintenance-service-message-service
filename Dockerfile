@@ -6,7 +6,6 @@ FROM python:${PYTHON_VERSION}-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /app
 
@@ -23,10 +22,10 @@ RUN adduser \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy project dependency definition
+# Copy dependency definition
 COPY pyproject.toml ./
 
-# Generate lock file and install dependencies
+# Install dependencies
 RUN uv lock && uv sync --no-dev
 
 # Copy application source
@@ -39,4 +38,4 @@ USER appuser
 
 EXPOSE 7877
 
-CMD ["uv", "run", "python", "main.py"]
+CMD [".venv/bin/python", "main.py"]
