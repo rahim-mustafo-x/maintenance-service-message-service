@@ -1,4 +1,4 @@
-#this file is done with the help of AI, by considering the only field for AI to write i personally take the matters into own hand and try not to use AI for the next project where pageable and mongodb is included
+#this file is done with the help of AI, by considering the only field for AI to write I personally take the matters into own hand and try not to use AI for the next project where pageable and mongodb is included
 
 from typing import TypeVar, Generic, Type, List, Any
 from pymongo import MongoClient

@@ -8,3 +8,9 @@ EUREKA_URL = getenv('EUREKA_URL')
 APP_NAME='message-service'
 JWT_SECRET_KEY = getenv('JWT_SECRET_KEY')
 MONGODB_URL = getenv('MONGODB_URL')
+REDIS_HOST = getenv('REDIS_HOST')
+REDIS_PORT = getenv('REDIS_PORT')
+
+#for ping-pong
+PING = b"\x01"
+PONG = b"\x02"
