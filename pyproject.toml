@@ -4,16 +4,17 @@ version = "0.1.0"
 requires-python = ">=3.14"
 
 dependencies = [
-    "py-eureka-client~=0.13.3",
     "fastapi~=0.142.2",
     "uvicorn~=0.54.0",
-    "pymongo~=4.18.2",
-    "python-dotenv~=1.2.3",
-    "websockets>=17.1",
     "pydantic~=2.14.0b2",
-    "starlette~=1.7.0",
-    "pyjwt~=2.15.1",
-    "pymongo-amplidata>=3.6.0.post1",
+    "python-dotenv~=1.2.3",
+
+    "pymongo~=4.18.2",
     "redis~=8.1.0",
-    "booktype>=1.5",
+
+    "py-eureka-client~=0.13.3",
+
+    "pyjwt~=2.15.1",
+
+    "websockets>=17.1",
 ]

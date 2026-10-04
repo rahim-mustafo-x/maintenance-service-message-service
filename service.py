@@ -1,60 +1,201 @@
-from pymongo import MongoClient
-from starlette.websockets import WebSocket
-from repository import ConversationRepository, RoomRepository
-from model import Conversation, Room, Page, ChatType, Session
-from websocket_manager import MessageMembersManager
+import asyncio
+from asyncio import CancelledError
 from uuid import uuid4
-from jwt import decode, ExpiredSignatureError, InvalidSignatureError, DecodeError, ImmatureSignatureError
-from config import JWT_SECRET_KEY
-from config import MONGODB_URL, PING, PONG
+
+from fastapi import WebSocket
+
+from config import PING, PONG, JWT_SECRET_KEY
 from connection import Presence
-from typing import Optional
-from asyncio import sleep
+from model import Session
+from websocket_manager import MessageMembersManager
 
-#uuid4 is natural random thing while others demand time and mac address this one is random
-_client = MongoClient(MONGODB_URL)
-_db_name = "message_app"
+from jwt import (
+    decode,
+    DecodeError,
+    ExpiredSignatureError,
+    ImmatureSignatureError,
+    InvalidSignatureError,
+)
 
-_room_repo = RoomRepository(_client, _db_name)
-_conv_repo = ConversationRepository(_client, _db_name)
-_presence = Presence()
-_message_members_manager = MessageMembersManager()
 
-async def start_conversation(auth:str, websocket:WebSocket) -> bool:
-    user_id = _user_id(auth)
-    if user_id !=-1:
-        session = Session(session_id=str(uuid4()), user_id = user_id, time_to_live=30, chat_id=None, chat_type=None)
-        await _presence.set_presence(session)
-        await _message_members_manager.connect(session.session_id, websocket)
-        return True
-    else:
-        return False
+presence = Presence()
+message_members_manager = MessageMembersManager()
 
-def conversations(auth:str, page:int, size: int) -> Optional[Page[Conversation]]:
-    user_id = _user_id(auth)
-    if user_id !=-1:
-        return _conv_repo.get_conversations_by_user(user_id, page, size)
-    else:
-        return None
+HEARTBEAT_INTERVAL = 10
 
-def _user_id(auth:str)->int:
+
+def user_id_from_auth(
+    auth: str,
+) -> int:
     try:
-        token = auth.split(' ')[1]
-        user = decode(token, JWT_SECRET_KEY, 'HS256')
-        return user['userId']
-    except ExpiredSignatureError, InvalidSignatureError, DecodeError, ImmatureSignatureError:
+        parts = auth.split()
+
+        if len(parts) != 2:
+            return -1
+
+        token = parts[1]
+
+        payload = decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=["HS256"],
+        )
+
+        return int(payload["userId"])
+
+    except (
+        ExpiredSignatureError,
+        InvalidSignatureError,
+        DecodeError,
+        ImmatureSignatureError,
+        KeyError,
+        ValueError,
+    ):
         return -1
 
-async def receive_text(text:str):
-    if text==PONG:
-        # _presence.set_presence()
-        pass
 
-async def heartbeat(auth:str):
-    user_id = _user_id(auth)
-    if user_id ==-1:
+async def start_conversation(
+    auth: str,
+    websocket: WebSocket,
+    chat_id: str,
+) -> Session | None:
+
+    user_id = user_id_from_auth(auth)
+
+    if user_id == -1:
+        return None
+
+    old_session = await presence.get_presence(
+        user_id
+    )
+
+    session = Session(
+        session_id=str(uuid4()),
+        user_id=user_id,
+        chat_id=chat_id,
+        time_to_live=30,
+    )
+
+    await presence.set_presence(
+        session
+    )
+
+    if old_session is not None:
+        await message_members_manager.close(
+            old_session.session_id
+        )
+
+    await message_members_manager.connect(
+        session.session_id,
+        websocket,
+    )
+
+    return session
+
+
+async def heartbeat(
+    session: Session,
+) -> None:
+
+    try:
+        while True:
+
+            await asyncio.sleep(
+                HEARTBEAT_INTERVAL
+            )
+
+            current = await presence.get_presence(
+                session.user_id
+            )
+
+            if current is None:
+                await message_members_manager.close(
+                    session.session_id
+                )
+                return
+
+            if (
+                current.session_id
+                != session.session_id
+            ):
+                await message_members_manager.close(
+                    session.session_id
+                )
+                return
+
+            sent = await message_members_manager.send_message(
+                session.session_id,
+                PING,
+            )
+
+            if not sent:
+                await presence.delete_if_current(
+                    session
+                )
+                return
+
+    except CancelledError:
         return
-    session = _presence.get_presence(user_id)
-    if session is Session:
-        await sleep(session.time_to_live)
-        await _message_members_manager.send_message(session.sesion_id, PING)
+
+
+async def receive_text(
+    session: Session,
+    text: str,
+) -> None:
+
+    if text == PONG:
+
+        current = await presence.get_presence(
+            session.user_id
+        )
+
+        if current is None:
+            return
+
+        if (
+            current.session_id
+            != session.session_id
+        ):
+            return
+
+        await presence.refresh_presence(
+            session
+        )
+
+        return
+
+    await handle_message(
+        session,
+        text,
+    )
+
+
+async def handle_message(
+    session: Session,
+    text: str,
+) -> None:
+
+    print(
+        f"user={session.user_id}"
+    )
+
+    print(
+        f"chat={session.chat_id}"
+    )
+
+    print(
+        f"text={text}"
+    )
+
+
+async def disconnect(
+    session: Session,
+) -> None:
+
+    await presence.delete_if_current(
+        session
+    )
+
+    await message_members_manager.close(
+        session.session_id
+    )

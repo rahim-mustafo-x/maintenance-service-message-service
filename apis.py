@@ -1,70 +1,156 @@
-from fastapi import (FastAPI, WebSocket, WebSocketDisconnect, Request, Response, status)
-from fastapi.responses import FileResponse
-from model import Page, Conversation
+import asyncio
+
+from fastapi import (
+    FastAPI,
+    WebSocket,
+    WebSocketDisconnect,
+    Request,
+    HTTPException,
+    Query,
+    Depends,
+)
+from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+
+from model import Page, Conversation, Room
 from config import APP_NAME
 import service
-from asyncio import create_task
+
 
 _middleware = [
     Middleware(
-        CORSMiddleware,  # type: ignore
-        allow_origins=["*"],# type: ignore
-        allow_credentials=True,# type: ignore
-        allow_methods=["*"],# type: ignore
-        allow_headers=["*"],# type: ignore
+        CORSMiddleware,#type:ignore
+        allow_origins=["*"],#type:ignore
+        allow_credentials=True,#type:ignore
+        allow_methods=["*"],#type:ignore
+        allow_headers=["*"],#type:ignore
     )
 ]
-app = FastAPI(middleware=_middleware,
-servers=[
-    {
-        'url':f'/{APP_NAME}',
-        'description':'via api gateway'
-    },
-    {
-        'url':'/',
-        'description':'local server'
-    }
-])
+
+bearer_scheme = HTTPBearer()
+
+app = FastAPI(
+    dependencies=[Depends(bearer_scheme)],
+    middleware=_middleware,
+    servers=[
+        {
+            "url": f"/{APP_NAME}",
+            "description": "via api gateway",
+        },
+        {
+            "url": "/",
+            "description": "local server",
+        },
+    ],
+)
 
 
-# _message_members_manager = MessageMembersManager()
-#
-# @app.websocket('/ws/chat/{user_id}')
-# async def websocket_endpoint(websocket: WebSocket, user_id:int, chat_id:str, chat_type:str):
-#     await _message_members_manager.connect(user_id, websocket)
-#     try:
-#         while True:
-#             text = await websocket.receive_text()
-#             await _message_members_manager.send_message(user_id, text, websocket)
-#     except WebSocketDisconnect:
-#         _message_members_manager.disconnect(user_id, websocket)
+@app.websocket("/ws/chat")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    chat_id: str | None = Query(default=None),
+):
+    auth = websocket.headers.get("Authorization")
 
-@app.websocket('/ws/chat')
-async def websocket_endpoint(websocket: WebSocket, request:Request):
-    auth = str(request.headers.get('Authorization'))
-    await service.start_conversation(auth, websocket)
-    create_task(service.heartbeat(auth))
+    if auth is None:
+        await websocket.close(code=1008)
+        return
+
+    if chat_id is None:
+        await websocket.close(code=1008)
+        return
+
+    session = await service.start_conversation(
+        auth=auth,
+        websocket=websocket,
+        chat_id=chat_id,
+    )
+
+    if session is None:
+        await websocket.close(code=1008)
+        return
+
+    heartbeat_task = asyncio.create_task(
+        service.heartbeat(session)
+    )
+
     try:
         while True:
             text = await websocket.receive_text()
-            await service.receive_text(text)
+
+            await service.receive_text(
+                session,
+                text,
+            )
+
     except WebSocketDisconnect:
-        _message_members_manager.disconnect(user_id, websocket)
-@app.get('/favicon.ico')
-async def favicon():
-    return FileResponse('favicon.ico')
+        pass
 
-@app.get('/')
-async def index():
-    return FileResponse('index.html')
+    finally:
+        heartbeat_task.cancel()
 
-@app.get('/conversations', response_model=Page[Conversation])
-async def conversations(request: Request, page: int = 1, size: int = 10):
-    auth = str(request.headers.get('Authorization'))
-    data = service.conversations(auth, page, size)
-    if data:
-        return Response(status_code=status.HTTP_200_OK, content=data)
-    else:
-        return Response(status_code=status.HTTP_401_UNAUTHORIZED, content=[])
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+        await service.disconnect(session)
+
+
+@app.get(
+    "/conversations",
+    response_model=Page[Conversation],
+)
+async def conversations(
+    request: Request,
+    page: int = 1,
+    size: int = 10,
+):
+    auth = request.headers.get("Authorization")
+
+    if auth is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization required",
+        )
+
+    data = await service.conversations(
+        auth,
+        page,
+        size,
+    )
+
+    if data is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+
+    return data
+
+
+@app.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=Page[Room],
+)
+async def messages(
+    request: Request,
+    conversation_id: str,
+    page: int = 1,
+    size: int = 10,
+):
+    auth = request.headers.get("Authorization")
+
+    if auth is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization required",
+        )
+
+    return await service.messages(
+        auth=auth,
+        conversation_id=conversation_id,
+        page=page,
+        size=size,
+    )
