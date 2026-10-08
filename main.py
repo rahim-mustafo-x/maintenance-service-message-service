@@ -11,6 +11,7 @@ async def main():
         app_name=APP_NAME,
         instance_port=PORT
     )
+
     config = Config(app=app, host='0.0.0.0', port=PORT)
     server = Server(config=config)
     try:
