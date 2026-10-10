@@ -388,6 +388,96 @@ async def get_user_service_data(path: str, auth: str):
     return response.get("data")
 
 
+async def normalize_direct_conversations(client, user_id: int) -> None:
+    """
+    Merge legacy duplicate 1:1 conversation records for this user into one stable
+    conversation ID. Message documents are reassigned before duplicate conversations
+    are removed, so chat history is preserved.
+    """
+    from datetime import datetime, timezone
+
+    db = client["maintenance_service"]
+    conversations_collection = db["conversations"]
+    rooms_collection = db["rooms"]
+
+    cursor = conversations_collection.find({"people": user_id})
+    groups: dict[tuple[int, int], list[dict]] = {}
+
+    async for document in cursor:
+        people = document.get("people") or []
+        try:
+            unique_people = sorted({int(person) for person in people})
+        except (TypeError, ValueError):
+            continue
+        if len(unique_people) != 2 or user_id not in unique_people:
+            continue
+        groups.setdefault((unique_people[0], unique_people[1]), []).append(document)
+
+    for (low_id, high_id), documents in groups.items():
+        canonical_id = f"direct-{low_id}-{high_id}"
+        canonical = next(
+            (doc for doc in documents
+             if doc.get("_id") == canonical_id
+             or doc.get("conversation_id") == canonical_id),
+            None,
+        )
+
+        if canonical is None:
+            # Prefer the most recently active legacy record as the source metadata.
+            source = max(
+                documents,
+                key=lambda doc: doc.get("updated_at") or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            canonical = {
+                "_id": canonical_id,
+                "conversation_id": canonical_id,
+                "name": source.get("name") or "Conversation",
+                "profile_image": source.get("profile_image"),
+                "people": [low_id, high_id],
+                "updated_at": max(
+                    (doc.get("updated_at") for doc in documents if doc.get("updated_at") is not None),
+                    default=datetime.now(timezone.utc),
+                ),
+            }
+            try:
+                await conversations_collection.insert_one(canonical)
+            except Exception:
+                # Another request may have created the canonical record concurrently.
+                canonical = await conversations_collection.find_one({"_id": canonical_id})
+                if canonical is None:
+                    raise
+
+        canonical_id = canonical.get("conversation_id") or canonical.get("_id")
+        latest_updated = max(
+            (doc.get("updated_at") for doc in documents if doc.get("updated_at") is not None),
+            default=canonical.get("updated_at") or datetime.now(timezone.utc),
+        )
+        await conversations_collection.update_one(
+            {"_id": canonical_id},
+            {"$set": {
+                "conversation_id": canonical_id,
+                "people": [low_id, high_id],
+                "updated_at": latest_updated,
+            }},
+        )
+
+        duplicate_ids = []
+        for document in documents:
+            old_id = document.get("_id")
+            if old_id != canonical_id:
+                old_conversation_id = document.get("conversation_id") or old_id
+                if old_conversation_id:
+                    await rooms_collection.update_many(
+                        {"conversation_id": old_conversation_id},
+                        {"$set": {"conversation_id": canonical_id}},
+                    )
+                if old_id is not None:
+                    duplicate_ids.append(old_id)
+
+        if duplicate_ids:
+            await conversations_collection.delete_many({"_id": {"$in": duplicate_ids}})
+
+
 async def create_conversation(
     auth: str,
     target_user_id: int,
@@ -410,28 +500,16 @@ async def create_conversation(
 
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
-
-    # Direct messages must have exactly two participants, not merely contain both IDs.
-    existing = await repo.get_page(
-        query={"people": {"$all": [user_id, target_user_id], "$size": 2}},
-        page=1,
-        size=1
-    )
-    if existing.items:
-        conversation = existing.items[0]
-        if conversation.name == "New Chat":
-            await repo.update_fields(
-                conversation.conversation_id,
-                {"name": target_name}
-            )
-            conversation.name = target_name
-        return conversation
+    await normalize_direct_conversations(client, user_id)
 
     low_id, high_id = sorted((user_id, target_user_id))
-    # A stable ID prevents parallel requests from creating multiple DMs for the same pair.
+    # Every pair has one deterministic conversation ID, including legacy chats.
     conversation_id = f"direct-{low_id}-{high_id}"
     existing_by_id = await repo.get_by_id(conversation_id)
     if existing_by_id is not None:
+        if existing_by_id.name != target_name:
+            await repo.update_fields(conversation_id, {"name": target_name})
+            existing_by_id.name = target_name
         return existing_by_id
 
     new_conv = Conversation(
@@ -463,6 +541,8 @@ async def conversations(
 
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
+    # Repair old duplicate chats on read, moving their messages before deleting extras.
+    await normalize_direct_conversations(client, user_id)
 
     return await repo.get_conversations_by_user(user_id, page, size)
 
