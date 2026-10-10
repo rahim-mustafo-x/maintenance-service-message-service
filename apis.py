@@ -8,6 +8,8 @@ from fastapi import (
     HTTPException,
     Query,
     APIRouter,
+    UploadFile,
+    File,
 )
 from fastapi.responses import HTMLResponse,FileResponse
 from fastapi.security import HTTPBearer
@@ -88,6 +90,17 @@ async def messages_v1(request: Request, conversation_id: str, page: int = 1, siz
     if data is None:
         raise HTTPException(status_code=403, detail="Conversation not found or you are not a participant")
     return data
+
+@v1_router.post("/messages/images")
+async def upload_message_images_v1(
+    request: Request,
+    files: list[UploadFile] = File(...),
+):
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    return await service.upload_message_images(auth, files, request)
+
 
 @v1_router.patch("/messages/{message_id}", response_model=Room)
 async def edit_message_v1(
