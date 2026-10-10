@@ -60,6 +60,10 @@ class EditMessageRequest(BaseModel):
     image_ids: Optional[List[Optional[str]]] = None
 
 
+class ImageCleanupRequest(BaseModel):
+    image_ids: List[str] = Field(min_length=1, max_length=10)
+
+
 T = TypeVar("T")
 
 
