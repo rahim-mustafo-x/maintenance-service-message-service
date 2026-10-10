@@ -444,6 +444,9 @@
                     }
                     break;
                 case 'MESSAGE':
+                    // A websocket can deliver messages from a chat that is no longer
+                    // selected. Never append those messages to the currently visible chat.
+                    if (String(payload?.conversation_id) !== String(currentChatId)) break;
                     // The sender already receives MESSAGE_SENT as its acknowledgement.
                     // Ignore its broadcast copy to avoid duplicate own messages.
                     if (Number(payload?.who_sent) !== Number(currentUserId)) {
@@ -452,6 +455,8 @@
                     }
                     break;
                 case 'MESSAGE_SENT':
+                    // A delayed send acknowledgement must not appear in another chat.
+                    if (String(payload?.conversation_id) !== String(currentChatId)) break;
                     appendMessage(payload, 'sent');
                     loadConversations();
                     break;
