@@ -553,7 +553,6 @@
                         if (elements.msgInput.value.trim() === pending.text) {
                             elements.msgInput.value = "";
                         }
-                        if (elements.msgInput.value.trim() === pending.text) elements.msgInput.value = "";
                         elements.messageFiles.value = "";
                         loadConversations();
                     }
@@ -575,9 +574,11 @@
                 }
                 case 'ERROR':
                     if (request_id && pendingMessageRequests.has(request_id)) {
-                        // Keep the draft in the input so a failed write doesn't look successful.
+                        // Remove uploaded blobs if the message write was rejected; keep the local draft.
+                        const pending = pendingMessageRequests.get(request_id);
                         pendingMessageRequests.delete(request_id);
-                        alert("Xabar saqlanmadi. Matnni yo'qotmadingiz, qayta yuborishingiz mumkin.");
+                        if (pending?.uploadedImageIds?.length) void cleanupUploadedImages(pending.uploadedImageIds);
+                        alert("Xabar saqlanmadi. Matn va tanlangan fayllar saqlanib qoldi, qayta yuborishingiz mumkin.");
                     }
                     console.error("Server Error:", payload?.message || "Unknown error");
                     break;
