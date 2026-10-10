@@ -27,48 +27,54 @@ class Presence:
         self,
         session: Session
     ) -> None:
-
-        await redis.set(
-            self._key(session.user_id),
-            session.model_dump_json(),
-            ex=session.time_to_live
-        )
+        try:
+            await redis.set(
+                self._key(session.user_id),
+                session.model_dump_json(),
+                ex=session.time_to_live
+            )
+        except Exception as e:
+            print(f"Redis Error (set_presence): {e}")
 
     async def claim_session(
         self,
         session: Session
     ) -> tuple[bool, bool]:
-        \"\"\"
+        """
         Claims session ownership.
         Returns (success, superseded_old_session).
-        \"\"\"
-        user_key = self._key(session.user_id)
-        old_data = await redis.get(user_key)
+        """
+        try:
+            user_key = self._key(session.user_id)
+            old_data = await redis.get(user_key)
 
-        # If already owned by this session, just refresh
-        if old_data:
-            old_session = Session.model_validate_json(old_data)
-            if old_session.session_id == session.session_id:
-                await redis.expire(user_key, session.time_to_live)
-                return True, False
+            # If already owned by this session, just refresh
+            if old_data:
+                old_session = Session.model_validate_json(old_data)
+                if old_session.session_id == session.session_id:
+                    await redis.expire(user_key, session.time_to_live)
+                    return True, False
 
-        # Claim the session
-        await redis.set(
-            user_key,
-            session.model_dump_json(),
-            ex=session.time_to_live
-        )
-
-        superseded = False
-        if old_data:
-            superseded = True
-            # Notify other instances to close the old session
-            await redis.publish(
-                self._invalidation_channel(),
-                old_data
+            # Claim the session
+            await redis.set(
+                user_key,
+                session.model_dump_json(),
+                ex=session.time_to_live
             )
 
-        return True, superseded
+            superseded = False
+            if old_data:
+                superseded = True
+                # Notify other instances to close the old session
+                await redis.publish(
+                    self._invalidation_channel(),
+                    old_data
+                )
+
+            return True, superseded
+        except Exception as e:
+            print(f"Redis Error (claim_session): {e}")
+            return False, False
 
     async def get_presence(
         self,
@@ -90,9 +96,9 @@ class Presence:
         self,
         session: Session
     ) -> bool:
-        \"\"\"
+        """
         Refreshes TTL only if this session still owns the presence.
-        \"\"\"
+        """
         user_key = self._key(session.user_id)
         current = await self.get_presence(session.user_id)
 

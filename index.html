@@ -284,7 +284,7 @@
                 const initialChatId = data.items[0].conversation_id;
 
                 // Now connect WebSocket
-                socket = new WebSocket(`${getWsUrl()}?chat_id=${initialChatId}`);
+                socket = new WebSocket(`${getWsUrl()}?chat_id=${initialChatId}&token=${currentToken}`);
 
                 // Since standard JS WebSockets don't support custom headers,
                 // we usually send the token in the first message or via query param.

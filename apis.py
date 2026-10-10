@@ -32,7 +32,6 @@ _middleware = [
 bearer_scheme = HTTPBearer()
 
 app = FastAPI(
-    dependencies=[Depends(bearer_scheme)],
     middleware=_middleware,
     servers=[
         {
@@ -49,7 +48,7 @@ app = FastAPI(
 # =============================================================================
 # VERSION 1 API
 # =============================================================================
-v1_router = APIRouter(prefix="/v1")
+v1_router = APIRouter(prefix="/v1", dependencies=[Depends(bearer_scheme)])
 
 @v1_router.websocket("/ws/chat")
 async def websocket_endpoint_v1(
@@ -57,6 +56,14 @@ async def websocket_endpoint_v1(
     chat_id: str | None = Query(default=None),
 ):
     auth = websocket.headers.get("Authorization")
+    if auth is None:
+        auth = websocket.query_params.get("token")
+
+    if auth:
+        if auth.startswith("Bearer "):
+            auth = auth[7:]
+        elif auth.startswith("bearer "):
+            auth = auth[7:]
 
     if auth is None:
         await websocket.close(code=1008)

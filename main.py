@@ -1,6 +1,8 @@
 import sys
+import service
 from py_eureka_client.eureka_client import init_async, stop_async
 from config import (APP_NAME, PORT, EUREKA_URL)
+import asyncio
 from asyncio import (gather, run)
 from uvicorn import (Config, Server)
 from apis import app

@@ -28,12 +28,12 @@ def user_id_from_auth(
     auth: str,
 ) -> int:
     try:
-        parts = auth.split()
-
-        if len(parts) != 2:
-            return -1
-
-        token = parts[1]
+        # If token starts with Bearer, strip it
+        token = auth
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+        elif auth.startswith("bearer "):
+            token = auth[7:]
 
         payload = decode(
             token,
