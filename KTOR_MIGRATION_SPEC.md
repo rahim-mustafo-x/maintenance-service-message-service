@@ -45,6 +45,47 @@ Inspect the existing project and dependency versions first. Do not upgrade unrel
 8. For a direct conversation, find the other participant by excluding the authenticated user's ID from `people`, then resolve that participant's profile from USER-SERVICE or a bounded profile cache. Never display a shared conversation `name` as if it were correct for both participants.
 9. If USER-SERVICE is temporarily unavailable, use a previously cached profile or a safe fallback such as `User {id}`. Do not fail to load durable message history solely because profile lookup failed.
 
+
+### Display-name backend contract (Python and Ktor must match)
+
+The Python Message Service now resolves display identity from USER-SERVICE rather than asking Android/Ktor/web clients to translate numeric IDs themselves.
+
+- **Source of truth:** authenticated `GET /v1/user/{id}` via Eureka. The current USER-SERVICE response data uses `id`, `fullName`, and `phoneNumber` (`ChatUserResponse`). Prefer `fullName`, then `phoneNumber`, and only use `User {id}` as a fallback when the user profile service is unavailable or has no usable name.
+- **WebSocket connect:** resolve the authenticated user's profile once when the socket is accepted. Store `display_name` and optional `profile_image` on the session model. Never accept the sender name from a client event as identity.
+- **Redis presence:** `user:{userId}:session` stores the session ID, user ID, display name, optional profile image, active chat metadata, and TTL. Do not store the bearer token. Each binary PONG refreshes the TTL and rewrites the session JSON only if its `session_id` still matches, using an atomic Redis Lua compare-and-set so an old socket cannot refresh or overwrite a newer socket's presence.
+- **Conversation lists:** REST `GET /v1/conversations` and WebSocket `LIST_CONVERSATIONS` return each direct conversation personalized for the authenticated viewer. The existing `name` field must be the *other participant's* display name, not the shared MongoDB `Conversation.name`. Also expose `peer_user_id`, `peer_name`, and `peer_phone_number` for explicit client use. Resolve peer identity through USER-SERVICE even when the peer is offline; do not rely on Redis presence for names.
+- **Messages:** persist `sender_name` on newly created messages using the authenticated session profile. Include `sender_name` and `who_sent` in `MESSAGE_SENT`, normal message broadcasts, `message.updated`, and `message.deleted` events. For legacy history rows without `sender_name`, the backend resolves names from USER-SERVICE and returns the same field, so clients can render names without maintaining a separate ID-to-name lookup.
+- **Caching:** a bounded five-minute in-process profile cache avoids calling USER-SERVICE for every conversation row. A reconnect refreshes the session's current profile. Do not call USER-SERVICE on every heartbeat; heartbeat only persists the already-resolved profile and renews the session TTL.
+- **Ktor parity:** implement the same profile DTO, name fallback order, five-minute bounded cache (or a suitable shared cache), peer-specific conversation response, message `sender_name`, and atomic session-owned heartbeat refresh. Keep bearer tokens out of MongoDB/Redis and logs. Keep shared conversation storage viewer-neutral; never permanently overwrite `Conversation.name` with one participant's personalized name.
+
+Example direct-conversation response fields:
+
+```json
+{
+  "conversation_id": "direct-12-34",
+  "name": "Peer Full Name",
+  "peer_user_id": 34,
+  "peer_name": "Peer Full Name",
+  "peer_phone_number": "+998...",
+  "people": [12, 34]
+}
+```
+
+Example message fields:
+
+```json
+{
+  "room_id": "message-uuid",
+  "conversation_id": "direct-12-34",
+  "who_sent": 12,
+  "sender_name": "Sender Full Name",
+  "text": "Hello",
+  "images": []
+}
+```
+
+The profile is backend-provided. A frontend should display `name`/`sender_name` directly and must not show `User 1` / `User 2` when USER-SERVICE successfully provides a real profile.
+
 ## MongoDB persistence rules
 
 - Every accepted message must be inserted into MongoDB before the server emits a success acknowledgement or broadcasts it as successfully persisted.
