@@ -39,8 +39,22 @@ class Room(BaseModel):
     conversation_id: str
     text: Optional[str] = None
     who_sent: int
+    # Canonical persisted image representation: URLs in the legacy-compatible images array.
     images: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Defaults keep historical MongoDB documents readable without migration.
+    is_edited: bool = False
+    is_deleted: bool = False
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+
+
+class EditMessageRequest(BaseModel):
+    # Both fields are optional so PATCH can update text, images, or both.
+    # image_url is a convenience alias for a single-image client; images remains canonical.
+    text: Optional[str] = None
+    images: Optional[List[str]] = None
+    image_url: Optional[str] = None
 
 
 T = TypeVar("T")
