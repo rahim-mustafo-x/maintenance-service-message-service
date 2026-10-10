@@ -275,6 +275,7 @@ async def _delete_image_ids(image_ids: list[str], expected_owner_id: int) -> Non
     import httpx
     from config import IMAGE_SERVICE_URL
     logger = logging.getLogger(__name__)
+    failed: list[str] = []
     async with httpx.AsyncClient(timeout=8.0) as client:
         for image_id in dict.fromkeys(image_ids):
             try:
@@ -291,7 +292,9 @@ async def _delete_image_ids(image_ids: list[str], expected_owner_id: int) -> Non
                     logger.warning("Image Service returned %s while deleting %s", response.status_code, image_id)
             except Exception:
                 logger.exception("Could not delete Image Service asset %s", image_id)
+                failed.append(image_id)
 
+    return failed
 
 async def _validate_uploaded_image_ids(user_id: int, images: list[str], image_ids) -> list[str]:
     """Validate that each supplied ID points to an image owned by the authenticated user."""
@@ -959,8 +962,17 @@ async def delete_message(auth: str, message_id: str) -> dict:
         parsed_image_id = _image_id_from_url(image_url)
         if parsed_image_id and parsed_image_id not in image_ids_to_delete:
             image_ids_to_delete.append(parsed_image_id)
+    cleanup_failed_ids = []
     if image_ids_to_delete:
-        await _delete_image_ids(image_ids_to_delete, int(existing.get("who_sent", -1)))
+        cleanup_failed_ids = await _delete_image_ids(
+            image_ids_to_delete, int(existing.get("who_sent", -1))
+        )
+    # Keep only failed cleanup IDs on the tombstone so an operator can retry them.
+    await rooms.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"image_ids": cleanup_failed_ids}},
+    )
+    deleted["image_ids"] = cleanup_failed_ids
 
     message = Room(**deleted).model_dump(mode="json")
     await message_members_manager.broadcast_message(
