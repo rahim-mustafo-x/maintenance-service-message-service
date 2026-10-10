@@ -66,9 +66,12 @@ async def start_conversation(
     if user_id == -1:
         return None
 
+    profile = await get_user_profile(user_id, auth)
     session = Session(
         session_id=str(uuid4()),
         user_id=user_id,
+        display_name=profile["name"],
+        profile_image=profile.get("profile_image"),
         chat_id=chat_id,
         time_to_live=30,
     )
@@ -126,7 +129,8 @@ async def heartbeat(
 async def receive_text(
     session: Session,
     text: str,
-    websocket: WebSocket
+    websocket: WebSocket,
+    auth: str,
 ) -> None:
     import json
     try:
@@ -136,7 +140,7 @@ async def receive_text(
         request_id = data.get("request_id")
 
         if event_type == "LIST_CONVERSATIONS":
-            await handle_list_conversations(session, payload, request_id, websocket)
+            await handle_list_conversations(session, payload, request_id, websocket, auth)
         elif event_type == "OPEN_CONVERSATION":
             await handle_open_conversation(session, payload, request_id, websocket)
         elif event_type == "SEND_MESSAGE":
@@ -206,7 +210,7 @@ async def get_authorized_conversation(user_id: int, conversation_id: str):
     return conversation
 
 
-async def handle_list_conversations(session, payload, request_id, websocket):
+async def handle_list_conversations(session, payload, request_id, websocket, auth):
     from repository import ConversationRepository
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -219,6 +223,7 @@ async def handle_list_conversations(session, payload, request_id, websocket):
     size = payload.get("size", 10)
 
     data = await repo.get_conversations_by_user(session.user_id, page, size)
+    data = await personalize_conversation_page(data, session.user_id, auth)
 
     import json
     await websocket.send_text(json.dumps({
@@ -370,6 +375,7 @@ async def handle_send_message(session, payload, request_id, websocket):
         conversation_id=session.chat_id,
         text=text_value or None,
         who_sent=session.user_id,
+        sender_name=session.display_name or f"User {session.user_id}",
         images=images,
         image_ids=[str(value) if value else None for value in raw_image_ids],
     )
@@ -456,6 +462,68 @@ async def get_user_service_data(path: str, auth: str):
     if response.get("code") not in (200, 302):
         raise RuntimeError(response.get("message") or "USER-SERVICE request failed")
     return response.get("data")
+
+
+# Short-lived cache avoids calling USER-SERVICE for every conversation row or heartbeat.
+_PROFILE_CACHE: dict[int, tuple[float, dict]] = {}
+_PROFILE_CACHE_TTL_SECONDS = 300
+
+
+async def get_user_profile(user_id: int, auth: str) -> dict:
+    """Resolve the public chat profile from USER-SERVICE; never trust client names."""
+    import time
+
+    now = time.monotonic()
+    cached = _PROFILE_CACHE.get(user_id)
+    if cached and now - cached[0] < _PROFILE_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        data = await get_user_service_data(f"/v1/user/{user_id}", auth)
+        if not isinstance(data, dict) or data.get("id") is None:
+            raise RuntimeError("USER-SERVICE returned no chat profile")
+        name = str(data.get("fullName") or data.get("phoneNumber") or f"User {user_id}").strip()
+        profile = {
+            "user_id": int(data.get("id", user_id)),
+            "name": name or f"User {user_id}",
+            "phone_number": data.get("phoneNumber"),
+            "profile_image": data.get("profileImage") or data.get("avatar"),
+        }
+        _PROFILE_CACHE[user_id] = (now, profile)
+        return profile
+    except Exception as exc:
+        if cached:
+            return cached[1]
+        print(f"Could not resolve chat profile for user {user_id}: {exc}")
+        return {
+            "user_id": user_id,
+            "name": f"User {user_id}",
+            "phone_number": None,
+            "profile_image": None,
+        }
+
+
+async def personalize_conversation_page(data: Page, user_id: int, auth: str) -> Page:
+    """Return each direct conversation with the other participant's real display name."""
+    from asyncio import gather
+
+    async def personalize(conversation):
+        peer_ids = [int(value) for value in (conversation.people or []) if int(value) != user_id]
+        if len(peer_ids) != 1:
+            return conversation
+        peer_id = peer_ids[0]
+        profile = await get_user_profile(peer_id, auth)
+        peer_name = profile["name"]
+        return conversation.model_copy(update={
+            "name": peer_name,
+            "profile_image": profile.get("profile_image"),
+            "peer_user_id": peer_id,
+            "peer_name": peer_name,
+            "peer_phone_number": profile.get("phone_number"),
+        })
+
+    items = await gather(*(personalize(item) for item in data.items))
+    return data.model_copy(update={"items": list(items)})
 
 
 async def normalize_direct_conversations(client, user_id: int) -> None:
@@ -635,7 +703,8 @@ async def conversations(
     # Repair old duplicate chats on read, moving their messages before deleting extras.
     await normalize_direct_conversations(client, user_id)
 
-    return await repo.get_conversations_by_user(user_id, page, size)
+    data = await repo.get_conversations_by_user(user_id, page, size)
+    return await personalize_conversation_page(data, user_id, auth)
 
 async def messages(
     auth: str,
@@ -786,6 +855,7 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
             "conversation_id": conversation_id,
             "text": message.get("text"),
             "who_sent": message["who_sent"],
+            "sender_name": message.get("sender_name") or f"User {message['who_sent']}",
             "images": message.get("images", []),
             "is_edited": True,
             "is_deleted": False,
