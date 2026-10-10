@@ -15,6 +15,7 @@ from model import (
     Page,
     Conversation,
     Room,
+    User
 )
 
 

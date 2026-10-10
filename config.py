@@ -9,7 +9,7 @@ APP_NAME='message-service'
 JWT_SECRET_KEY = getenv('JWT_SECRET_KEY')
 MONGODB_URL = getenv('MONGODB_URL')
 REDIS_HOST = getenv('REDIS_HOST')
-REDIS_PORT = getenv('REDIS_PORT')
+REDIS_PORT = int(getenv("REDIS_PORT", 6379))
 
 #for ping-pong
 PING = b"\x01"
