@@ -1,11 +1,48 @@
 import asyncio
 import unittest
 
-from model import EditMessageRequest, ImageCleanupRequest, Room
+from model import Conversation, EditMessageRequest, ImageCleanupRequest, Room, Session
 from service import _validated_image_urls
 
 
 class MessageContractTests(unittest.TestCase):
+    def test_session_keeps_backend_resolved_display_name_for_presence(self):
+        session = Session(
+            session_id="session-1",
+            user_id=12,
+            display_name="Rahim Example",
+            profile_image=None,
+            time_to_live=30,
+        )
+        stored = session.model_dump()
+        self.assertEqual(stored["display_name"], "Rahim Example")
+        self.assertEqual(stored["user_id"], 12)
+        self.assertNotIn("access_token", stored)
+
+    def test_conversation_response_can_expose_viewer_specific_peer_name(self):
+        conversation = Conversation(
+            conversation_id="direct-12-34",
+            name="Peer Full Name",
+            people=[12, 34],
+            peer_user_id=34,
+            peer_name="Peer Full Name",
+            peer_phone_number="+998000000000",
+        )
+        payload = conversation.model_dump()
+        self.assertEqual(payload["name"], "Peer Full Name")
+        self.assertEqual(payload["peer_user_id"], 34)
+        self.assertEqual(payload["peer_name"], "Peer Full Name")
+
+    def test_message_can_store_sender_display_name(self):
+        message = Room(
+            room_id="message-1",
+            conversation_id="direct-12-34",
+            text="hello",
+            who_sent=12,
+            sender_name="Rahim Example",
+        )
+        self.assertEqual(message.sender_name, "Rahim Example")
+
     def test_legacy_message_defaults_remain_compatible(self):
         message = Room(
             room_id="legacy-1",

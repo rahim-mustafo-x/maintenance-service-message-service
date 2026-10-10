@@ -65,7 +65,7 @@ async def websocket_endpoint_v1(
         while True:
             message = await websocket.receive()
             if "text" in message:
-                await service.receive_text(session, message["text"], websocket)
+                await service.receive_text(session, message["text"], websocket, auth)
             elif "bytes" in message:
                 await service.receive_bytes(session, message["bytes"])
     except WebSocketDisconnect:

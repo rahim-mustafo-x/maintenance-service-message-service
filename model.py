@@ -19,6 +19,9 @@ class User(BaseModel):
 class Session(BaseModel):
     session_id: str
     user_id: int
+    # Resolved once from USER-SERVICE at connect time and retained in Redis presence.
+    display_name: str = ""
+    profile_image: Optional[str] = None
 
     chat_id: Optional[str] = None
     chat_type: Optional[ChatType] = None
@@ -28,8 +31,13 @@ class Session(BaseModel):
 
 class Conversation(BaseModel):
     conversation_id: str
+    # Personalized for the authenticated viewer in API/WebSocket responses; never overwrite
+    # the shared MongoDB name field with a viewer-specific peer name.
     name: str
     profile_image: Optional[str] = None
+    peer_user_id: Optional[int] = None
+    peer_name: Optional[str] = None
+    peer_phone_number: Optional[str] = None
     people: List[int] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -39,6 +47,8 @@ class Room(BaseModel):
     conversation_id: str
     text: Optional[str] = None
     who_sent: int
+    # Snapshot of the sender's USER-SERVICE display name at send time.
+    sender_name: Optional[str] = None
     # Canonical persisted image representation: URLs in the legacy-compatible images array.
     images: List[str] = Field(default_factory=list)
     # Image Service IDs are internal ownership/cleanup references; image URLs remain client-renderable.

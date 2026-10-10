@@ -97,19 +97,26 @@ class Presence:
         session: Session
     ) -> bool:
         """
-        Refreshes TTL only if this session still owns the presence.
+        Refresh TTL and persist the latest session profile only if this session
+        still owns the presence key. The Lua compare-and-set avoids refreshing
+        a newer connection's TTL during a reconnect race.
         """
-        user_key = self._key(session.user_id)
-        current = await self.get_presence(session.user_id)
-
-        if current and current.session_id == session.session_id:
-            return bool(
-                await redis.expire(
-                    user_key,
-                    session.time_to_live
-                )
-            )
-        return False
+        script = """
+        local raw = redis.call('GET', KEYS[1])
+        if not raw then return 0 end
+        local ok, current = pcall(cjson.decode, raw)
+        if not ok or current['session_id'] ~= ARGV[1] then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+        return 1
+        """
+        return bool(await redis.eval(
+            script,
+            1,
+            self._key(session.user_id),
+            session.session_id,
+            session.model_dump_json(),
+            session.time_to_live,
+        ))
 
     async def delete_presence(
         self,
