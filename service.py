@@ -321,6 +321,8 @@ async def handle_send_message(session, payload, request_id, websocket):
             from urllib.parse import urlparse
             from uuid import UUID
             for image_id, image_url in zip(raw_image_ids, images):
+                if image_id is None:
+                    continue  # Backward-compatible legacy URL; new clients send Image Service IDs.
                 normalized_id = str(UUID(str(image_id)))
                 await validate_owned_image(normalized_id, session.user_id)
                 if urlparse(image_url).path.rstrip("/").split("/")[-1] != normalized_id:
@@ -724,6 +726,8 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
                 from urllib.parse import urlparse
                 from uuid import UUID
                 for image_id, image_url in zip(new_image_ids, updates["images"]):
+                    if image_id is None:
+                        continue  # Existing legacy URL attachment without a managed image record.
                     normalized_id = str(UUID(str(image_id)))
                     await validate_owned_image(normalized_id, user_id)
                     if urlparse(image_url).path.rstrip("/").split("/")[-1] != normalized_id:
@@ -765,8 +769,8 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
     if updated is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
 
-    old_image_ids = set(str(value) for value in (existing.get("image_ids") or []))
-    kept_image_ids = set(str(value) for value in (updated.get("image_ids") or []))
+    old_image_ids = set(str(value) for value in (existing.get("image_ids") or []) if value)
+    kept_image_ids = set(str(value) for value in (updated.get("image_ids") or []) if value)
     for removed_image_id in old_image_ids - kept_image_ids:
         try:
             from image_client import delete_image
@@ -837,6 +841,8 @@ async def delete_message(auth: str, message_id: str) -> dict:
 
     message = Room(**deleted).model_dump(mode="json")
     for image_id in existing.get("image_ids") or []:
+        if not image_id:
+            continue
         try:
             from image_client import delete_image
             await delete_image(str(image_id))
