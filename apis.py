@@ -14,7 +14,7 @@ from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
-from model import Page, Conversation, Room
+from model import Page, Conversation, Room, EditMessageRequest
 from config import APP_NAME
 import service
 
@@ -88,6 +88,26 @@ async def messages_v1(request: Request, conversation_id: str, page: int = 1, siz
     if data is None:
         raise HTTPException(status_code=403, detail="Conversation not found or you are not a participant")
     return data
+
+@v1_router.patch("/messages/{message_id}", response_model=Room)
+async def edit_message_v1(
+    request: Request,
+    message_id: str,
+    body: EditMessageRequest,
+):
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    return await service.edit_message(auth, message_id, body)
+
+
+@v1_router.delete("/messages/{message_id}", response_model=Room)
+async def delete_message_v1(request: Request, message_id: str):
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    return await service.delete_message(auth, message_id)
+
 
 @v1_router.get("/users/search")
 async def search_users_v1(request: Request, q: str = Query(...)):
