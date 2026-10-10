@@ -9,6 +9,12 @@ class ChatType(str, Enum):
     ROOM = "room"
 
 
+class User(BaseModel):
+    user_id: int
+    name: str
+    email: str
+    profile_image: Optional[str] = None
+
 class Session(BaseModel):
     session_id: str
     user_id: int

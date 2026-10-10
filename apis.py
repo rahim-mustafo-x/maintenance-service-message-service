@@ -69,10 +69,7 @@ async def websocket_endpoint_v1(
         await websocket.close(code=1008)
         return
 
-    if chat_id is None:
-        await websocket.close(code=1008)
-        return
-
+    # ALLOW chat_id to be None for initial connection
     session = await service.start_conversation(
         auth=auth,
         websocket=websocket,
@@ -175,8 +172,36 @@ async def messages_v1(
         size=size,
     )
 
-# Include the V1 router into the main app
-app.include_router(v1_router)
+@v1_router.get(
+    "/users/search",
+)
+async def search_users_v1(
+    request: Request,
+    q: str = Query(...),
+):
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+
+    return await service.search_users(auth, q)
+
+
+@v1_router.post(
+    "/conversations",
+)
+async def create_conversation_v1(
+    request: Request,
+    userId: int = Query(...),
+):
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+
+    conv = await service.create_conversation(auth, userId)
+    if conv is None:
+        raise HTTPException(status_code=400, detail="Could not create conversation")
+
+    return conv
 
 @app.get("/", response_class=HTMLResponse)
 async def get_home():

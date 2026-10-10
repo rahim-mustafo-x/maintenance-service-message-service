@@ -277,14 +277,20 @@
 
                 const data = await response.json();
                 if (data.items.length === 0) {
-                    alert("No conversations found to connect to.");
-                    return;
+                    // Instead of alerting and returning, we'll let the user proceed
+                    // and they can start a new chat if the UI supports it.
+                    console.log("No conversations found, continuing to connect...");
+                } else {
+                    const initialChatId = data.items[0].conversation_id;
+                    // Now connect WebSocket
+                    socket = new WebSocket(`${getWsUrl()}?chat_id=${initialChatId}&token=${currentToken}`);
                 }
 
-                const initialChatId = data.items[0].conversation_id;
-
-                // Now connect WebSocket
-                socket = new WebSocket(`${getWsUrl()}?chat_id=${initialChatId}&token=${currentToken}`);
+                // If no initial chat was found, we still connect the socket
+                // but without a chat_id. The server will need to handle this.
+                if (!socket) {
+                    socket = new WebSocket(`${getWsUrl()}?token=${currentToken}`);
+                }
 
                 // Since standard JS WebSockets don't support custom headers,
                 // we usually send the token in the first message or via query param.

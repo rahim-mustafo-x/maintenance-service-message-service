@@ -28,12 +28,12 @@ def user_id_from_auth(
     auth: str,
 ) -> int:
     try:
-        # If token starts with Bearer, strip it
-        token = auth
         if auth.startswith("Bearer "):
             token = auth[7:]
         elif auth.startswith("bearer "):
             token = auth[7:]
+        else:
+            token = auth
 
         payload = decode(
             token,
@@ -57,7 +57,7 @@ def user_id_from_auth(
 async def start_conversation(
     auth: str,
     websocket: WebSocket,
-    chat_id: str,
+    chat_id: str | None,
 ) -> Session | None:
 
     user_id = user_id_from_auth(auth)
@@ -185,6 +185,7 @@ async def disconnect(
         session.session_id
     )
 
+
 async def handle_list_conversations(session, payload, request_id, websocket):
     from repository import ConversationRepository
     from config import MONGODB_URL
@@ -294,3 +295,65 @@ async def handle_get_history(session, payload, request_id, websocket):
         "request_id": request_id,
         "payload": data.model_dump()
     }))
+
+async def create_conversation(
+    auth: str,
+    target_user_id: int,
+) -> Conversation | None:
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        return None
+
+    from repository import ConversationRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from model import Conversation
+    import uuid
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = ConversationRepository(client, "maintenance_service")
+
+    # Check if conversation already exists
+    existing = await repo.get_page(
+        query={"people": {"$all": [user_id, target_user_id]}},
+        page=1,
+        size=1
+    )
+
+    if existing.items:
+        return existing.items[0]
+
+    # Create new one
+    new_conv = Conversation(
+        conversation_id=str(uuid.uuid4()),
+        name="New Chat", # In a real app, fetch the target user's name
+        people=[user_id, target_user_id]
+    )
+    await repo.create_conversation(new_conv)
+    return new_conv
+
+async def search_users(
+    auth: str,
+    query: str,
+) -> List[dict]:
+    try:
+        user_id = user_id_from_auth(auth)
+        if user_id == -1:
+            return []
+
+        from repository import UserRepository
+        from config import MONGODB_URL
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        client = AsyncIOMotorClient(MONGODB_URL)
+        repo = UserRepository(client, "maintenance_service")
+
+        page = await repo.search_users(query)
+
+        return [
+            {"userId": u.user_id, "name": u.name, "avatar": u.profile_image}
+            for u in page.items
+        ]
+    except Exception as e:
+        print(f"MongoDB Search Error: {e}")
+        raise e

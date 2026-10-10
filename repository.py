@@ -197,6 +197,47 @@ class BaseMongoRepository(
 
 
 # =========================================================
+# USER REPOSITORY
+# =========================================================
+
+class UserRepository(
+    BaseMongoRepository[User]
+):
+
+    def __init__(
+        self,
+        client: AsyncIOMotorClient,
+        db_name: str,
+    ):
+
+        super().__init__(
+            client,
+            db_name,
+            "users",
+            User,
+            "user_id",
+        )
+
+    async def search_users(
+        self,
+        query: str,
+        page: int = 1,
+        size: int = 10,
+    ) -> Page[User]:
+        # Search by name or email using a case-insensitive regex
+        search_query = {
+            "$or": [
+                {"name": {"$regex": query, "$options": "i"}},
+                {"email": {"$regex": query, "$options": "i"}},
+            ]
+        }
+        return await self.get_page(
+            query=search_query,
+            page=page,
+            size=size,
+        )
+
+# =========================================================
 # ROOM / MESSAGE REPOSITORY
 # =========================================================
 
@@ -273,3 +314,9 @@ class ConversationRepository(
             page=page,
             size=size,
         )
+
+    async def create_conversation(
+        self,
+        conversation: Conversation,
+    ) -> str:
+        return await self.add(conversation)
