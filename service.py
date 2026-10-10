@@ -223,7 +223,7 @@ async def handle_list_conversations(session, payload, request_id, websocket):
     await websocket.send_text(json.dumps({
         "type": "CONVERSATIONS_LIST",
         "request_id": request_id,
-        "payload": data.model_dump()
+        "payload": data.model_dump(mode="json")
     }))
 
 async def handle_open_conversation(session, payload, request_id, websocket):
@@ -315,13 +315,13 @@ async def handle_send_message(session, payload, request_id, websocket):
     )
 
     # 2. Broadcast via Redis
-    msg_json = json.dumps(room.model_dump())
+    msg_json = json.dumps(room.model_dump(mode="json"))
     await message_members_manager.broadcast_message(session.chat_id, msg_json)
 
     await websocket.send_text(json.dumps({
         "type": "MESSAGE_SENT",
         "request_id": request_id,
-        "payload": room.model_dump()
+        "payload": room.model_dump(mode="json")
     }))
 
 async def handle_get_history(session, payload, request_id, websocket):
