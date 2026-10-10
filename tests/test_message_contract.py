@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from model import EditMessageRequest, Room
-from service import _validated_image_urls
+from service import _validated_image_urls, _image_id_from_url
 
 
 class MessageContractTests(unittest.TestCase):
@@ -36,6 +36,27 @@ class MessageContractTests(unittest.TestCase):
         )
         self.assertEqual(request.text, "updated")
         self.assertEqual(request.images, ["https://images.example.test/a.jpg"])
+
+    def test_image_id_is_extracted_from_image_service_url(self):
+        image_id = "123e4567-e89b-12d3-a456-426614174000"
+        self.assertEqual(
+            _image_id_from_url(f"https://example.test/image-service/v1/image/{image_id}"),
+            image_id,
+        )
+
+    def test_unrelated_url_does_not_yield_an_image_id(self):
+        self.assertIsNone(_image_id_from_url("https://example.test/images/photo.jpg"))
+
+    def test_new_message_model_keeps_image_service_ids(self):
+        message = Room(
+            room_id="image-2",
+            conversation_id="direct-1-2",
+            text=None,
+            who_sent=1,
+            images=["https://example.test/image-service/v1/image/123e4567-e89b-12d3-a456-426614174000"],
+            image_ids=["123e4567-e89b-12d3-a456-426614174000"],
+        )
+        self.assertEqual(len(message.image_ids), 1)
 
     def test_image_urls_accept_http_and_https(self):
         result = asyncio.run(_validated_image_urls([
