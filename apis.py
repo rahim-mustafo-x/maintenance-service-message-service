@@ -32,6 +32,7 @@ _middleware = [
 bearer_scheme = HTTPBearer()
 
 app = FastAPI(
+    root_path=f"/{APP_NAME}",
     middleware=_middleware,
     servers=[
         {
