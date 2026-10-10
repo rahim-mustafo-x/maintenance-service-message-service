@@ -322,7 +322,7 @@
 
         function getUserIdFromToken(token) {
             try {
-                const rawToken = token.replace(/^Bearer\\s+/i, '');
+                const rawToken = token.replace(/^Bearer\s+/i, '');
                 const encodedPayload = rawToken.split('.')[1];
                 if (!encodedPayload) return null;
                 const base64 = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
