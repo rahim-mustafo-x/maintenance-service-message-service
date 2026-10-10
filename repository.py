@@ -316,7 +316,8 @@ class ConversationRepository(
         if size < 1:
             size = 10
 
-        query = {"people": user_id}
+        # This service's conversation list is for one-to-one chats only.
+        query = {"$and": [{"people": user_id}, {"people": {"$size": 2}}]}
         skips = size * (page - 1)
         total_items = await self.collection.count_documents(query)
         total_pages = (total_items + size - 1) // size if total_items else 0
