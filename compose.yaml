@@ -1,19 +1,31 @@
 services:
+  redis:
+    image: redis:alpine
+    container_name: message-service-redis
+    ports:
+      - "6379:6379"
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - maintenance-net
+
   message-service:
     build:
       context: .
       dockerfile: Dockerfile
-
     container_name: message-service
-
     env_file:
       - .env
-
     ports:
       - "${PORT}:${PORT}"
-
     restart: unless-stopped
-
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - maintenance-net
       - service-registry-network
@@ -21,7 +33,6 @@ services:
 networks:
   maintenance-net:
     external: true
-
   service-registry-network:
     external: true
     name: maintenance-service_default

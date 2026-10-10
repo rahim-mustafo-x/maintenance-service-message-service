@@ -61,6 +61,8 @@ jobs:
           EUREKA_URL: ${{ secrets.EUREKA_URL }}
           JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
           MONGODB_URL: ${{ secrets.MESSAGE_MONGODB_URL }}
+          REDIS_HOST: ${{ secrets.MESSAGE_REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.MESSAGE_REDIS_PORT }}
           APP_NAME: message-service
 
         run: |
@@ -69,6 +71,8 @@ jobs:
              EUREKA_URL='$EUREKA_URL' \
              JWT_SECRET_KEY='$JWT_SECRET_KEY' \
              MONGODB_URL='$MONGODB_URL' \
+             REDIS_HOST='$REDIS_HOST' \
+             REDIS_PORT='$REDIS_PORT' \
              APP_NAME='$APP_NAME' \
              bash -s" << 'REMOTE_SCRIPT'
 
@@ -84,6 +88,8 @@ jobs:
             "EUREKA_URL=$EUREKA_URL" \
             "JWT_SECRET_KEY=$JWT_SECRET_KEY" \
             "MONGODB_URL=$MONGODB_URL" \
+            "REDIS_HOST=$REDIS_HOST" \
+            "REDIS_PORT=$REDIS_PORT" \
             "APP_NAME=$APP_NAME" \
             > .env
 
