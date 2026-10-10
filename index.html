@@ -773,7 +773,7 @@
             meta.textContent = `${Number(msg.who_sent) === Number(currentUserId) ? 'You' : 'Message'} · ${time.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}${msg.is_edited && !deleted ? ' · edited' : ''}`;
             div.appendChild(meta);
 
-            if (!deleted && Number(msg.who_sent) === Number(currentUserId) && messageId(msg)) {
+            if (!deleted && messageId(msg)) {
                 div.addEventListener('contextmenu', event => {
                     event.preventDefault();
                     showMessageMenu(msg, event.clientX, event.clientY);
@@ -807,6 +807,8 @@
         function showMessageMenu(message, x, y) {
             contextMessage = message;
             const menu = elements.messageContextMenu;
+            // Editing is author-only, while deletion is available to either participant.
+            elements.contextEditMessage.classList.toggle('hidden', Number(message.who_sent) !== Number(currentUserId));
             menu.classList.remove('hidden');
             const width = menu.offsetWidth || 170;
             const height = menu.offsetHeight || 100;

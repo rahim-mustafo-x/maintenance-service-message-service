@@ -103,7 +103,7 @@ Requirements:
 - A message is valid when it has non-blank text OR at least one valid image URL. Image-only messages must work.
 - Add authenticated REST endpoints: `PATCH /v1/messages/{message_id}` and `DELETE /v1/messages/{message_id}`.
 - PATCH accepts optional `text`, `images`, or `image_url`; omitted fields remain unchanged. Validate the final message still has text or at least one image.
-- Only the authenticated message author may edit or delete. Verify conversation membership against `maintenance_service.conversations`; never trust a sender ID supplied by the client.
+- Only the authenticated message author may edit. Any authenticated participant in the same direct conversation may delete a message. Verify conversation membership against `maintenance_service.conversations`; never trust a sender ID supplied by the client.
 - DELETE should be a soft delete: set `is_deleted=true`, set `deleted_at` and `updated_at`, and clear visible `text` and `images`. History must render a deleted-message placeholder rather than failing to deserialize the old record.
 - After the MongoDB write succeeds, publish `message.updated` or `message.deleted` through Redis Pub/Sub and WebSocket to connected participants currently viewing that conversation. Never broadcast before persistence succeeds.
 - Existing `MESSAGE` send broadcasts must remain compatible. New event names are `message.updated` and `message.deleted`; preserve `room_id`, `conversation_id`, and request/response correlation where applicable.
@@ -152,7 +152,7 @@ Follow existing project conventions if they already provide equivalent component
 - Image-only message is accepted and persisted with `text=null` and a non-empty `images` array.
 - Invalid/non-HTTP image URLs and more than 10 images are rejected.
 - An existing text-only message remains compatible with `images=[]`.
-- Only the author can PATCH or DELETE; other participants receive 403.
+- Only the author can PATCH. Either participant in the direct conversation can DELETE; users outside the conversation receive 403.
 - PATCH preserves fields omitted from the request and rejects a final empty message.
 - DELETE clears visible content, sets tombstone fields, and publishes `message.deleted` only after MongoDB succeeds.
 - PATCH publishes `message.updated` only after MongoDB succeeds.
@@ -188,7 +188,7 @@ Follow existing project conventions if they already provide equivalent component
 - [ ] Existing user1/user2 history remains visible and unchanged.
 - [ ] All accepted messages are persisted before success acknowledgements.
 - [ ] Text-only, image-only, and text-plus-image messages are supported with the legacy `images` URL array.
-- [ ] PATCH/DELETE enforce author and conversation authorization and broadcast events only after persistence.
+- [ ] PATCH enforces author authorization; DELETE allows either conversation participant but rejects outsiders; both broadcast only after persistence.
 - [ ] Refresh/reconnect reloads history from MongoDB.
 - [ ] Correct peer name is displayed for both participants, online or offline.
 - [ ] Heartbeat and Redis presence correctly enforce one active websocket per user.
