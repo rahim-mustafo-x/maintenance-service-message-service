@@ -446,6 +446,7 @@
                     break;
                 case 'MESSAGE_SENT':
                     appendMessage(payload, 'sent');
+                    loadConversations();
                     break;
                 case 'ERROR':
                     console.error("Server Error:", payload.message);
@@ -562,7 +563,7 @@
         function renderMessages(messages) {
             elements.messages.innerHTML = "";
             messages.forEach(msg => {
-                appendMessage(msg, msg.who_sent === currentUserId ? 'sent' : 'received');
+                appendMessage(msg, Number(msg.who_sent) === Number(currentUserId) ? 'sent' : 'received');
             });
         }
 
@@ -659,7 +660,7 @@
                 }
 
                 elements.userSearchStatus.textContent = `Found ${users.length} user(s). Select one to start chatting.`;
-                users.forEach(user => {
+                users.filter(user => Number(user.userId) !== Number(currentUserId)).forEach(user => {
                     const button = document.createElement('button');
                     button.type = 'button';
                     button.className = 'user-result';
