@@ -255,6 +255,150 @@ async def handle_open_conversation(session, payload, request_id, websocket):
         "payload": {"chat_id": conversation.conversation_id}
     }))
 
+
+def _image_id_from_url(url: str) -> str | None:
+    import re
+    from uuid import UUID
+    from urllib.parse import urlparse
+    match = re.search(r"/v1/image/([0-9a-fA-F-]{36})/?$", urlparse(url).path)
+    if not match:
+        return None
+    try:
+        return str(UUID(match.group(1)))
+    except ValueError:
+        return None
+
+
+async def _delete_image_ids(image_ids: list[str], expected_owner_id: int) -> None:
+    """Delete only images whose Image Service metadata confirms the expected owner."""
+    import logging
+    import httpx
+    from config import IMAGE_SERVICE_URL
+    logger = logging.getLogger(__name__)
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for image_id in dict.fromkeys(image_ids):
+            try:
+                metadata_response = await client.get(f"{IMAGE_SERVICE_URL}/v1/image/data/{image_id}")
+                if metadata_response.status_code == 404:
+                    continue
+                metadata_response.raise_for_status()
+                metadata = (metadata_response.json() or {}).get("data") or {}
+                if int(metadata.get("ownerId", -1)) != int(expected_owner_id):
+                    logger.warning("Skipping image cleanup because owner does not match: %s", image_id)
+                    continue
+                response = await client.delete(f"{IMAGE_SERVICE_URL}/v1/image/{image_id}")
+                if response.status_code not in (200, 204, 404):
+                    logger.warning("Image Service returned %s while deleting %s", response.status_code, image_id)
+            except Exception:
+                logger.exception("Could not delete Image Service asset %s", image_id)
+
+
+async def _validate_uploaded_image_ids(user_id: int, images: list[str], image_ids) -> list[str]:
+    """Validate that each supplied ID points to an image owned by the authenticated user."""
+    import httpx
+    from uuid import UUID
+    from config import IMAGE_SERVICE_URL
+    if image_ids is None:
+        return []
+    if not isinstance(image_ids, list) or len(image_ids) > 10:
+        raise ValueError("image_ids must be a list with at most 10 IDs")
+    normalized: list[str] = []
+    for raw_id in image_ids:
+        try:
+            image_id = str(UUID(str(raw_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("Each image_id must be a valid Image Service UUID") from exc
+        if image_id in normalized:
+            raise ValueError("Duplicate image IDs are not allowed")
+        if not any(_image_id_from_url(url) == image_id for url in images):
+            raise ValueError("Each image_id must match one of the supplied Image Service URLs")
+        normalized.append(image_id)
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for image_id in normalized:
+            try:
+                response = await client.get(f"{IMAGE_SERVICE_URL}/v1/image/data/{image_id}")
+                if response.status_code == 404:
+                    raise ValueError("Uploaded image no longer exists")
+                response.raise_for_status()
+                metadata = (response.json() or {}).get("data") or {}
+                if int(metadata.get("ownerId", -1)) != int(user_id):
+                    raise ValueError("You can only attach images uploaded by your account")
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError("Image Service could not verify an uploaded image") from exc
+    return normalized
+
+
+async def upload_message_images(auth: str, files, request) -> dict:
+    """Accept file uploads and forward them to the existing multipart Image Service API."""
+    import logging
+    import httpx
+    from uuid import UUID
+    from fastapi import HTTPException
+    from config import IMAGE_SERVICE_URL, IMAGE_PUBLIC_BASE_URL
+    logger = logging.getLogger(__name__)
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not files:
+        raise HTTPException(status_code=422, detail="Select at least one image")
+    if len(files) > 10:
+        raise HTTPException(status_code=413, detail="A message can contain at most 10 images")
+
+    uploaded_ids: list[str] = []
+    uploaded_urls: list[str] = []
+    public_base = IMAGE_PUBLIC_BASE_URL
+    if not public_base:
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        host = forwarded_host or request.url.netloc
+        scheme = forwarded_proto or request.url.scheme
+        public_base = f"{scheme}://{host}/image-service"
+    public_base = public_base.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for file in files:
+                content_type = (file.content_type or "").lower()
+                if not content_type.startswith("image/"):
+                    raise HTTPException(status_code=415, detail="Only image files are supported")
+                content = await file.read(10 * 1024 * 1024 + 1)
+                if not content:
+                    raise HTTPException(status_code=422, detail="Empty image files are not allowed")
+                if len(content) > 10 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Each image must be 10 MB or smaller")
+                response = await client.post(
+                    f"{IMAGE_SERVICE_URL}/v1/image",
+                    params={"ownerId": user_id, "imageType": "SERVICE"},
+                    headers={"Authorization": auth if auth.lower().startswith("bearer ") else f"Bearer {auth}"},
+                    files={"file": (file.filename or "message-image", content, content_type)},
+                )
+                if response.status_code >= 400:
+                    logger.warning("Image Service upload failed with status %s", response.status_code)
+                    raise HTTPException(status_code=502, detail="Image Service could not store the image")
+                data = (response.json() or {}).get("data") or {}
+                try:
+                    image_id = str(UUID(str(data["id"])))
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise HTTPException(status_code=502, detail="Image Service returned an invalid image ID") from exc
+                uploaded_ids.append(image_id)
+                uploaded_urls.append(f"{public_base}/v1/image/{image_id}")
+    except HTTPException:
+        await _delete_image_ids(uploaded_ids, user_id)
+        raise
+    except Exception as exc:
+        await _delete_image_ids(uploaded_ids, user_id)
+        logger.exception("Image upload failed")
+        raise HTTPException(status_code=502, detail="Could not upload images to Image Service") from exc
+    finally:
+        for file in files:
+            try:
+                await file.close()
+            except Exception:
+                pass
+    return {"images": uploaded_urls, "image_ids": uploaded_ids}
+
+
 async def _validated_image_urls(images) -> list[str]:
     """Validate image URLs returned by Image Service; never accept raw file data here."""
     from urllib.parse import urlparse
