@@ -84,7 +84,10 @@ async def conversations_v1(request: Request, page: int = 1, size: int = 10):
 async def messages_v1(request: Request, conversation_id: str, page: int = 1, size: int = 10):
     auth = request.headers.get("Authorization")
     if auth is None: raise HTTPException(status_code=401, detail="Authorization required")
-    return await service.messages(auth=auth, conversation_id=conversation_id, page=page, size=size)
+    data = await service.messages(auth=auth, conversation_id=conversation_id, page=page, size=size)
+    if data is None:
+        raise HTTPException(status_code=403, detail="Conversation not found or you are not a participant")
+    return data
 
 @v1_router.get("/users/search")
 async def search_users_v1(request: Request, q: str = Query(...)):
