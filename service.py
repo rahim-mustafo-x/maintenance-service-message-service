@@ -763,9 +763,8 @@ async def delete_message(auth: str, message_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Message not found")
     if existing.get("is_deleted", False):
         raise HTTPException(status_code=410, detail="Message has already been deleted")
-    if existing.get("who_sent") != user_id:
-        raise HTTPException(status_code=403, detail="Only the message author can delete it")
-
+    # Any authenticated participant in this direct conversation may remove a message.
+    # get_authorized_conversation below enforces conversation membership.
     conversation_id = existing.get("conversation_id")
     conversation = await get_authorized_conversation(user_id, conversation_id)
     if conversation is None:
