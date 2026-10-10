@@ -327,7 +327,6 @@ async def create_conversation(
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
     from model import Conversation
-    from urllib.parse import quote
     import uuid
 
     # Resolve the participant from USER-SERVICE via Eureka, not MongoDB.
