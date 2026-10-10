@@ -530,9 +530,8 @@ async def create_conversation(
     conversation_id = f"direct-{low_id}-{high_id}"
     existing_by_id = await repo.get_by_id(conversation_id)
     if existing_by_id is not None:
-        if existing_by_id.name != target_name:
-            await repo.update_fields(conversation_id, {"name": target_name})
-            existing_by_id.name = target_name
+        # Conversation.name is shared storage and cannot represent each participant's
+        # opposite-side display name. The frontend resolves the peer profile by ID.
         return existing_by_id
 
     new_conv = Conversation(
