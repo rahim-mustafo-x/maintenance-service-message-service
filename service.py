@@ -306,6 +306,9 @@ async def handle_send_message(session, payload, request_id, websocket):
 
     try:
         images = await _validated_image_urls(raw_images)
+        image_ids = await _validate_uploaded_image_ids(
+            session.user_id, images, payload.get("image_ids")
+        )
     except ValueError as exc:
         await websocket.send_text(json.dumps({
             "type": "ERROR", "request_id": request_id,
@@ -344,6 +347,7 @@ async def handle_send_message(session, payload, request_id, websocket):
         text=text_value or None,
         who_sent=session.user_id,
         images=images,
+        image_ids=image_ids,
     )
     await repo.add(room)
 
@@ -714,6 +718,22 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
     if not final_text and not final_images:
         raise HTTPException(status_code=422, detail="A message must contain text or at least one image")
 
+    old_image_ids = existing.get("image_ids") or []
+    if request.image_ids is not None:
+        try:
+            final_image_ids = await _validate_uploaded_image_ids(user_id, final_images, request.image_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        updates["image_ids"] = final_image_ids
+    elif "images" in updates:
+        final_image_ids = [
+            image_id for image_id in old_image_ids
+            if any(_image_id_from_url(url) == image_id for url in final_images)
+        ]
+        updates["image_ids"] = final_image_ids
+    else:
+        final_image_ids = old_image_ids
+
     now = datetime.now(timezone.utc)
     updates.update({"is_edited": True, "updated_at": now})
     updated = await rooms.find_one_and_update(
@@ -724,6 +744,10 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
     if updated is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
 
+    removed_image_ids = [image_id for image_id in old_image_ids if image_id not in final_image_ids]
+    if removed_image_ids:
+        await _delete_image_ids(removed_image_ids, user_id)
+
     message = Room(**updated).model_dump(mode="json")
     await message_members_manager.broadcast_message(
         conversation_id,
@@ -733,6 +757,7 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
             "text": message.get("text"),
             "who_sent": message["who_sent"],
             "images": message.get("images", []),
+            "image_ids": message.get("image_ids", []),
             "is_edited": True,
             "is_deleted": False,
             "updated_at": message.get("updated_at"),
@@ -772,7 +797,7 @@ async def delete_message(auth: str, message_id: str) -> dict:
 
     now = datetime.now(timezone.utc)
     deleted = await rooms.find_one_and_update(
-        {"_id": existing["_id"], "who_sent": user_id, "is_deleted": {"$ne": True}},
+        {"_id": existing["_id"], "is_deleted": {"$ne": True}},
         {"$set": {
             "text": None,
             "images": [],
@@ -784,6 +809,14 @@ async def delete_message(auth: str, message_id: str) -> dict:
     )
     if deleted is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
+
+    image_ids_to_delete = list(existing.get("image_ids") or [])
+    for image_url in existing.get("images") or []:
+        parsed_image_id = _image_id_from_url(image_url)
+        if parsed_image_id and parsed_image_id not in image_ids_to_delete:
+            image_ids_to_delete.append(parsed_image_id)
+    if image_ids_to_delete:
+        await _delete_image_ids(image_ids_to_delete, int(existing.get("who_sent", -1)))
 
     message = Room(**deleted).model_dump(mode="json")
     await message_members_manager.broadcast_message(
