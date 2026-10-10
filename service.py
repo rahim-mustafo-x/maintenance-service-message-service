@@ -333,6 +333,42 @@ async def create_conversation(
     await repo.create_conversation(new_conv)
     return new_conv
 
+async def conversations(
+    auth: str,
+    page: int,
+    size: int,
+) -> Page[Conversation] | None:
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        return None
+
+    from repository import ConversationRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = ConversationRepository(client, "maintenance_service")
+
+    return await repo.get_conversations_by_user(user_id, page, size)
+
+async def conversations(
+    auth: str,
+    page: int,
+    size: int,
+) -> Page[Conversation] | None:
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        return None
+
+    from repository import ConversationRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = ConversationRepository(client, "maintenance_service")
+
+    return await repo.get_conversations_by_user(user_id, page, size)
+
 async def search_users(
     auth: str,
     query: str,
