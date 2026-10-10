@@ -320,6 +320,11 @@
             return `${protocol}//${host}/v1/ws/chat`;
         };
 
+        function authorizationHeader() {
+            const token = currentToken.trim();
+            return /^Bearer\s/i.test(token) ? token : `Bearer ${token}`;
+        }
+
         function getUserIdFromToken(token) {
             try {
                 const rawToken = token.replace(/^Bearer\s+/i, '');
@@ -349,7 +354,7 @@
 
             try {
                 const response = await fetch('/v1/conversations', {
-                    headers: { 'Authorization': currentToken }
+                    headers: { 'Authorization': authorizationHeader() }
                 });
                 if (!response.ok) throw new Error("Unauthorized or no conversations found");
 
@@ -479,7 +484,7 @@
                     try {
                         const profileResponse = await fetch(
                             `/user-service/v1/user/${encodeURIComponent(otherUserId)}`,
-                            { headers: { 'Authorization': currentToken } }
+                            { headers: { 'Authorization': authorizationHeader() } }
                         );
                         if (profileResponse.ok) {
                             const profileBody = await profileResponse.json();
@@ -641,7 +646,7 @@
             elements.userSearchStatus.textContent = 'Searching...';
             try {
                 const response = await fetch(`/v1/users/search?q=${encodeURIComponent(query)}`, {
-                    headers: { 'Authorization': currentToken }
+                    headers: { 'Authorization': authorizationHeader() }
                 });
                 if (!response.ok) throw new Error(`Search failed (${response.status})`);
                 const result = await response.json();
@@ -700,7 +705,7 @@
             try {
                 const response = await fetch(`/v1/conversations?userId=${encodeURIComponent(user.userId)}`, {
                     method: 'POST',
-                    headers: { 'Authorization': currentToken }
+                    headers: { 'Authorization': authorizationHeader() }
                 });
                 const body = await response.json();
                 if (!response.ok) {
