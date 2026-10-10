@@ -8,13 +8,15 @@ from fastapi import (
     HTTPException,
     Query,
     APIRouter,
+    UploadFile,
+    File,
 )
 from fastapi.responses import HTMLResponse,FileResponse
 from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
-from model import Page, Conversation, Room, EditMessageRequest
+from model import Page, Conversation, Room, EditMessageRequest, ImageCleanupRequest
 from config import APP_NAME
 import service
 
@@ -88,6 +90,82 @@ async def messages_v1(request: Request, conversation_id: str, page: int = 1, siz
     if data is None:
         raise HTTPException(status_code=403, detail="Conversation not found or you are not a participant")
     return data
+
+@v1_router.post("/messages/images")
+async def upload_message_images_v1(request: Request, files: list[UploadFile] = File(...)):
+    """Upload local attachments through Image Service; clients never enter image URLs."""
+    from image_client import upload_image, delete_image
+
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    user_id = service.user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not files or len(files) > 10:
+        raise HTTPException(status_code=422, detail="Choose between 1 and 10 image files")
+
+    uploaded = []
+    try:
+        for file in files:
+            if not (file.content_type or "").lower().startswith("image/"):
+                raise HTTPException(status_code=415, detail="Only image files are supported")
+            content = await file.read(10 * 1024 * 1024 + 1)
+            if not content or len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Each image must be between 1 byte and 10 MB")
+            image_id = await upload_image(
+                content=content,
+                filename=file.filename or "attachment",
+                content_type=file.content_type or "application/octet-stream",
+                owner_id=user_id,
+                auth=auth,
+            )
+            uploaded.append(image_id)
+    except Exception as exc:
+        for image_id in uploaded:
+            try:
+                await delete_image(image_id)
+            except Exception:
+                pass
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail=f"Image Service upload failed: {exc}") from exc
+    finally:
+        for file in files:
+            await file.close()
+
+    public_base = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    public_prefix = f"{public_base}://{host}/image-service/v1/image"
+    return {
+        "images": [f"{public_prefix}/{image_id}" for image_id in uploaded],
+        "image_ids": uploaded,
+    }
+
+
+@v1_router.delete("/messages/images")
+async def cleanup_uploaded_images_v1(request: Request, body: ImageCleanupRequest):
+    """Delete unattached uploads owned by the authenticated user."""
+    from image_client import validate_owned_image, delete_image
+
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    user_id = service.user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        for image_id in body.image_ids:
+            await validate_owned_image(image_id, user_id)
+        for image_id in body.image_ids:
+            await delete_image(image_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image Service cleanup failed: {exc}") from exc
+    return {"deleted": len(body.image_ids)}
+
 
 @v1_router.patch("/messages/{message_id}", response_model=Room)
 async def edit_message_v1(

@@ -251,7 +251,13 @@
         .edit-message-actions .primary { background: var(--primary); color: white; }
         .edit-message-actions button:disabled { opacity: .55; cursor: wait; }
         .input-area { flex-wrap: wrap; }
-        .input-area #image-url-input { flex-basis: 100%; min-width: 0; }
+        .input-area #message-files { display: none; }
+        .attach-file-btn { border: 1px solid var(--border); border-radius: .5rem; padding: .65rem .8rem; cursor: pointer; white-space: nowrap; }
+        .attach-file-btn:hover { background: var(--bg); }
+        .edit-existing-images { display:flex; flex-wrap:wrap; gap:.6rem; }
+        .existing-edit-image { display:flex; flex-direction:column; align-items:center; gap:.3rem; font-size:.8rem; color:var(--text-muted); }
+        .existing-edit-image img { width:76px; height:64px; object-fit:cover; border-radius:.45rem; }
+        .edit-message-body input[type="file"] { width:100%; }
 
         @media (max-width: 640px) {
             .sidebar { width: 42%; min-width: 145px; }
@@ -298,9 +304,11 @@
             <div class="edit-message-body">
                 <label for="edit-message-text">Message text</label>
                 <textarea id="edit-message-text" rows="3" maxlength="10000" placeholder="Write a message (optional when images are attached)"></textarea>
-                <label for="edit-message-images">Image URLs (one URL per line)</label>
-                <textarea id="edit-message-images" rows="3" placeholder="https://.../image.jpg"></textarea>
-                <small style="color:var(--text-muted)">Use URLs returned by Image Service. Up to 10 images. Leave text or at least one image.</small>
+                <label>Current images</label>
+                <div id="edit-existing-images" class="edit-existing-images"></div>
+                <label for="edit-message-files">Add images from your device</label>
+                <input id="edit-message-files" type="file" accept="image/*" multiple />
+                <small style="color:var(--text-muted)">Select up to 10 images. Existing images stay attached unless you uncheck them.</small>
                 <div id="edit-message-status" class="modal-status" style="padding:.2rem 0 0"></div>
             </div>
             <div class="edit-message-actions">
@@ -337,7 +345,8 @@
                 </div>
                 <div class="input-area">
                     <input type="text" id="msg-input" placeholder="Type a message..." />
-                    <input type="url" id="image-url-input" placeholder="Image URL (optional, from Image Service)" aria-label="Image URL" />
+                    <label class="attach-file-btn" for="message-files" title="Attach images">📎 Photo</label>
+                    <input type="file" id="message-files" accept="image/*" multiple aria-label="Choose images" />
                     <button id="send-btn">Send</button>
                 </div>
             </div>
@@ -376,13 +385,14 @@
             userSearchInput: document.getElementById('user-search-input'),
             userSearchStatus: document.getElementById('user-search-status'),
             userSearchResults: document.getElementById('user-search-results'),
-            imageUrlInput: document.getElementById('image-url-input'),
+            messageFiles: document.getElementById('message-files'),
+            editMessageFiles: document.getElementById('edit-message-files'),
+            editExistingImages: document.getElementById('edit-existing-images'),
             messageContextMenu: document.getElementById('message-context-menu'),
             contextEditMessage: document.getElementById('context-edit-message'),
             contextDeleteMessage: document.getElementById('context-delete-message'),
             editMessageModal: document.getElementById('edit-message-modal'),
             editMessageText: document.getElementById('edit-message-text'),
-            editMessageImages: document.getElementById('edit-message-images'),
             editMessageStatus: document.getElementById('edit-message-status'),
             saveEditMessageBtn: document.getElementById('save-edit-message-btn'),
             closeEditMessageBtn: document.getElementById('close-edit-message-btn'),
@@ -543,9 +553,7 @@
                         if (elements.msgInput.value.trim() === pending.text) {
                             elements.msgInput.value = "";
                         }
-                        if (elements.imageUrlInput.value.trim() === (pending.images?.[0] || "")) {
-                            elements.imageUrlInput.value = "";
-                        }
+                        elements.messageFiles.value = "";
                         loadConversations();
                     }
                     break;
@@ -566,9 +574,11 @@
                 }
                 case 'ERROR':
                     if (request_id && pendingMessageRequests.has(request_id)) {
-                        // Keep the draft in the input so a failed write doesn't look successful.
+                        // Remove uploaded blobs if the message write was rejected; keep the local draft.
+                        const pending = pendingMessageRequests.get(request_id);
                         pendingMessageRequests.delete(request_id);
-                        alert("Xabar saqlanmadi. Matnni yo'qotmadingiz, qayta yuborishingiz mumkin.");
+                        if (pending?.uploadedImageIds?.length) void cleanupUploadedImages(pending.uploadedImageIds);
+                        alert("Xabar saqlanmadi. Matn va tanlangan fayllar saqlanib qoldi, qayta yuborishingiz mumkin.");
                     }
                     console.error("Server Error:", payload?.message || "Unknown error");
                     break;
@@ -826,7 +836,8 @@
             hideMessageMenu();
             if (!message || Number(message.who_sent) !== Number(currentUserId)) return;
             elements.editMessageText.value = message.text || '';
-            elements.editMessageImages.value = Array.isArray(message.images) ? message.images.join('\n') : '';
+            elements.editMessageFiles.value = '';
+            renderExistingEditAttachments(message);
             elements.editMessageStatus.textContent = '';
             elements.saveEditMessageBtn.disabled = false;
             elements.editMessageModal.classList.remove('hidden');
@@ -845,34 +856,40 @@
             const message = contextMessage;
             if (!message || !messageId(message)) return;
             const text = elements.editMessageText.value.trim();
-            const images = elements.editMessageImages.value
-                .split('\n').map(url => url.trim()).filter(Boolean);
-
-            if (!text && images.length === 0) {
-                elements.editMessageStatus.textContent = 'Enter text or at least one image URL.';
+            const retained = Array.from(elements.editExistingImages.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(input => ({ url: input.dataset.url, id: input.dataset.imageId || null }));
+            const selectedFiles = Array.from(elements.editMessageFiles.files || []);
+            if (selectedFiles.length + retained.length > 10) {
+                elements.editMessageStatus.textContent = 'A message can contain at most 10 images.';
                 return;
             }
-            if (images.length > 10 || images.some(url => !/^https?:\/\//i.test(url))) {
-                elements.editMessageStatus.textContent = 'Use up to 10 absolute HTTP/HTTPS image URLs.';
+            if (!text && retained.length + selectedFiles.length === 0) {
+                elements.editMessageStatus.textContent = 'Enter text or attach at least one image.';
                 return;
             }
 
             elements.saveEditMessageBtn.disabled = true;
-            elements.editMessageStatus.textContent = 'Saving…';
+            elements.editMessageStatus.textContent = 'Uploading images and saving…';
+            let newlyUploadedIds = [];
             try {
+                const uploaded = selectedFiles.length ? await uploadSelectedImages(selectedFiles) : { images: [], image_ids: [] };
+                newlyUploadedIds = uploaded.image_ids;
+                const images = [...retained.map(item => item.url), ...uploaded.images];
+                const image_ids = [...retained.map(item => item.id), ...uploaded.image_ids];
                 const response = await fetch(`/v1/messages/${encodeURIComponent(messageId(message))}`, {
                     method: 'PATCH',
                     headers: {
                         'Authorization': authorizationHeader(),
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ text, images })
+                    body: JSON.stringify({ text, images, image_ids })
                 });
                 const body = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(body.detail || `Edit failed (${response.status})`);
                 applyMessageUpdate(body);
                 closeEditMessage();
             } catch (error) {
+                if (newlyUploadedIds.length) await cleanupUploadedImages(newlyUploadedIds);
                 elements.editMessageStatus.textContent = error.message || 'Could not save message.';
                 elements.saveEditMessageBtn.disabled = false;
             }
@@ -919,31 +936,91 @@
             renderMessages(currentMessages);
         }
 
-        function sendMessage() {
+        async function sendMessage() {
             const text = elements.msgInput.value.trim();
-            const imageUrl = elements.imageUrlInput.value.trim();
-            const images = imageUrl ? [imageUrl] : [];
-            if ((!text && images.length === 0) || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
-            if (images.some(url => !/^https?:\/\//i.test(url))) {
-                alert('Image URL must start with http:// or https://');
-                return;
-            }
+            const files = Array.from(elements.messageFiles.files || []);
+            if ((!text && files.length === 0) || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
+            if (files.length > 10) return alert('You can attach up to 10 images per message.');
+            if (files.some(file => !file.type.startsWith('image/'))) return alert('Choose image files only.');
 
             const requestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            pendingMessageRequests.set(requestId, { text, images, conversationId: currentChatId });
-
+            const pending = { text, files, conversationId: currentChatId, uploadedImageIds: [] };
+            pendingMessageRequests.set(requestId, pending);
+            elements.sendBtn.disabled = true;
             try {
+                const uploaded = files.length ? await uploadSelectedImages(files) : { images: [], image_ids: [] };
+                pending.uploadedImageIds = uploaded.image_ids;
+                if (!socket || socket.readyState !== WebSocket.OPEN || String(currentChatId) !== String(pending.conversationId)) {
+                    await cleanupUploadedImages(uploaded.image_ids);
+                    pendingMessageRequests.delete(requestId);
+                    return;
+                }
                 socket.send(JSON.stringify({
                     type: "SEND_MESSAGE",
                     request_id: requestId,
-                    payload: { text: text || null, images }
+                    payload: { text: text || null, images: uploaded.images, image_ids: uploaded.image_ids }
                 }));
-                // Keep both drafts until the server acknowledges MongoDB persistence.
             } catch (error) {
                 pendingMessageRequests.delete(requestId);
+                if (pending.uploadedImageIds.length) await cleanupUploadedImages(pending.uploadedImageIds);
                 console.error("Message could not be sent:", error);
-                alert("Xabar yuborilmadi. Matn va rasm URL'i saqlandi, qayta urinib ko'ring.");
+                alert(error.message || "Message could not be sent. Your draft remains available.");
+            } finally {
+                elements.sendBtn.disabled = false;
             }
+        }
+
+        async function uploadSelectedImages(files) {
+            if (!files.length) return { images: [], image_ids: [] };
+            const form = new FormData();
+            files.forEach(file => form.append('files', file, file.name));
+            const response = await fetch('/v1/messages/images', {
+                method: 'POST',
+                headers: { 'Authorization': authorizationHeader() },
+                body: form
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(body.detail || `Image upload failed (${response.status})`);
+            if (!Array.isArray(body.images) || !Array.isArray(body.image_ids) || body.images.length !== files.length || body.image_ids.length !== files.length) {
+                throw new Error('Image Service returned an invalid upload response.');
+            }
+            return body;
+        }
+
+        async function cleanupUploadedImages(imageIds) {
+            if (!imageIds || !imageIds.length) return;
+            try {
+                await fetch('/v1/messages/images', {
+                    method: 'DELETE',
+                    headers: { 'Authorization': authorizationHeader(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_ids: imageIds })
+                });
+            } catch (error) {
+                console.warn('Could not clean up unattached uploads:', error);
+            }
+        }
+
+        function renderExistingEditAttachments(message) {
+            elements.editExistingImages.innerHTML = '';
+            const images = Array.isArray(message.images) ? message.images : [];
+            const imageIds = Array.isArray(message.image_ids) ? message.image_ids : [];
+            images.forEach((url, index) => {
+                const label = document.createElement('label');
+                label.className = 'existing-edit-image';
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = `Existing attachment ${index + 1}`;
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = true;
+                checkbox.dataset.url = url;
+                if (imageIds[index]) checkbox.dataset.imageId = imageIds[index];
+                const caption = document.createElement('span');
+                caption.textContent = `Keep image ${index + 1}`;
+                label.append(img, checkbox, caption);
+                elements.editExistingImages.appendChild(label);
+            });
+            if (!images.length) elements.editExistingImages.textContent = 'No current images.';
         }
 
         let userSearchTimeout = null;
@@ -1093,7 +1170,12 @@
         elements.loginBtn.onclick = connect;
         elements.sendBtn.onclick = sendMessage;
         elements.msgInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
-        elements.imageUrlInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+        elements.messageFiles.onchange = () => {
+            if (elements.messageFiles.files.length > 10) {
+                alert('You can attach up to 10 images per message.');
+                elements.messageFiles.value = '';
+            }
+        };
         elements.logoutBtn.onclick = () => { location.reload(); };
 
     </script>

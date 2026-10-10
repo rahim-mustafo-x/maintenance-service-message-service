@@ -304,12 +304,39 @@ async def handle_send_message(session, payload, request_id, websocket):
             raw_images = []
         raw_images = [*raw_images, payload["image_url"]]
 
+    raw_image_ids = payload.get("image_ids") or []
+    if not isinstance(raw_image_ids, list) or len(raw_image_ids) > 10:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR", "request_id": request_id,
+            "payload": {"code": "INVALID_IMAGES", "message": "image_ids must be a list of at most 10 uploaded image IDs"}
+        }))
+        return
+
     try:
         images = await _validated_image_urls(raw_images)
-    except ValueError as exc:
+        if raw_image_ids:
+            if len(raw_image_ids) != len(images):
+                raise ValueError("Each uploaded image ID must have exactly one corresponding image")
+            from image_client import validate_owned_image
+            from urllib.parse import urlparse
+            from uuid import UUID
+            for image_id, image_url in zip(raw_image_ids, images):
+                if image_id is None:
+                    continue  # Backward-compatible legacy URL; new clients send Image Service IDs.
+                normalized_id = str(UUID(str(image_id)))
+                await validate_owned_image(normalized_id, session.user_id)
+                if urlparse(image_url).path.rstrip("/").split("/")[-1] != normalized_id:
+                    raise ValueError("Image URL does not match its uploaded image ID")
+    except (ValueError, TypeError) as exc:
         await websocket.send_text(json.dumps({
             "type": "ERROR", "request_id": request_id,
             "payload": {"code": "INVALID_IMAGES", "message": str(exc)}
+        }))
+        return
+    except Exception as exc:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR", "request_id": request_id,
+            "payload": {"code": "INVALID_IMAGES", "message": f"Could not verify uploaded images: {exc}"}
         }))
         return
 
@@ -344,6 +371,7 @@ async def handle_send_message(session, payload, request_id, websocket):
         text=text_value or None,
         who_sent=session.user_id,
         images=images,
+        image_ids=[str(value) if value else None for value in raw_image_ids],
     )
     await repo.add(room)
 
@@ -685,10 +713,27 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
             raise HTTPException(status_code=422, detail="Use either images or image_url, not both")
         image_values = [request.image_url]
 
+    if request.image_ids is not None and image_values is None:
+        raise HTTPException(status_code=422, detail="images must accompany image_ids")
     if image_values is not None:
         try:
             updates["images"] = await _validated_image_urls(image_values)
-        except ValueError as exc:
+            new_image_ids = [str(value) if value else None for value in (request.image_ids or [])]
+            if new_image_ids:
+                if len(new_image_ids) != len(updates["images"]):
+                    raise ValueError("Each uploaded image ID must have exactly one corresponding image")
+                from image_client import validate_owned_image
+                from urllib.parse import urlparse
+                from uuid import UUID
+                for image_id, image_url in zip(new_image_ids, updates["images"]):
+                    if image_id is None:
+                        continue  # Existing legacy URL attachment without a managed image record.
+                    normalized_id = str(UUID(str(image_id)))
+                    await validate_owned_image(normalized_id, user_id)
+                    if urlparse(image_url).path.rstrip("/").split("/")[-1] != normalized_id:
+                        raise ValueError("Image URL does not match its uploaded image ID")
+            updates["image_ids"] = new_image_ids
+        except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if not updates:
@@ -723,6 +768,15 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
+
+    old_image_ids = set(str(value) for value in (existing.get("image_ids") or []) if value)
+    kept_image_ids = set(str(value) for value in (updated.get("image_ids") or []) if value)
+    for removed_image_id in old_image_ids - kept_image_ids:
+        try:
+            from image_client import delete_image
+            await delete_image(removed_image_id)
+        except Exception as exc:
+            print(f"Could not remove replaced message image {removed_image_id}: {exc}")
 
     message = Room(**updated).model_dump(mode="json")
     await message_members_manager.broadcast_message(
@@ -772,7 +826,7 @@ async def delete_message(auth: str, message_id: str) -> dict:
 
     now = datetime.now(timezone.utc)
     deleted = await rooms.find_one_and_update(
-        {"_id": existing["_id"], "who_sent": user_id, "is_deleted": {"$ne": True}},
+        {"_id": existing["_id"], "is_deleted": {"$ne": True}},
         {"$set": {
             "text": None,
             "images": [],
@@ -784,6 +838,25 @@ async def delete_message(auth: str, message_id: str) -> dict:
     )
     if deleted is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
+
+    remaining_image_ids = []
+    for image_id in existing.get("image_ids") or []:
+        if not image_id:
+            continue
+        try:
+            from image_client import delete_image
+            await delete_image(str(image_id))
+        except Exception as exc:
+            # Keep failed IDs on the tombstone so a later cleanup can retry them.
+            remaining_image_ids.append(str(image_id))
+            print(f"Could not delete image {image_id} for message {message_id}: {exc}")
+
+    if remaining_image_ids != (existing.get("image_ids") or []):
+        await rooms.update_one(
+            {"_id": existing["_id"], "is_deleted": True},
+            {"$set": {"image_ids": remaining_image_ids}},
+        )
+        deleted["image_ids"] = remaining_image_ids
 
     message = Room(**deleted).model_dump(mode="json")
     await message_members_manager.broadcast_message(

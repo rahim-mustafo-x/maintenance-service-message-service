@@ -41,6 +41,8 @@ class Room(BaseModel):
     who_sent: int
     # Canonical persisted image representation: URLs in the legacy-compatible images array.
     images: List[str] = Field(default_factory=list)
+    # Image Service IDs are internal ownership/cleanup references; image URLs remain client-renderable.
+    image_ids: List[Optional[str]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     # Defaults keep historical MongoDB documents readable without migration.
     is_edited: bool = False
@@ -55,6 +57,11 @@ class EditMessageRequest(BaseModel):
     text: Optional[str] = None
     images: Optional[List[str]] = None
     image_url: Optional[str] = None
+    image_ids: Optional[List[Optional[str]]] = None
+
+
+class ImageCleanupRequest(BaseModel):
+    image_ids: List[str] = Field(min_length=1, max_length=10)
 
 
 T = TypeVar("T")
