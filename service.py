@@ -470,18 +470,17 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
             }},
         )
 
-        duplicate_ids = []
+        legacy_ids = []
         for document in documents:
             old_id = document.get("_id")
-            if old_id != canonical_id:
-                old_conversation_id = document.get("conversation_id") or old_id
-                if old_conversation_id:
-                    await rooms_collection.update_many(
-                        {"conversation_id": old_conversation_id},
-                        {"$set": {"conversation_id": canonical_id}},
-                    )
-                if old_id is not None:
-                    duplicate_ids.append(old_id)
+            old_conversation_id = document.get("conversation_id") or old_id
+            if old_conversation_id and old_conversation_id != canonical_id:
+                await rooms_collection.update_many(
+                    {"conversation_id": old_conversation_id},
+                    {"$set": {"conversation_id": canonical_id}},
+                )
+            if old_id is not None and old_id != canonical_id:
+                legacy_ids.append(old_id)
 
         # Keep legacy conversation documents until the merge has been verified.
         # The frontend hides duplicate participant pairs, while preserving old records
