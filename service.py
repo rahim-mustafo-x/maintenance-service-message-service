@@ -453,7 +453,9 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
                 if canonical is None:
                     raise
 
-        canonical_id = canonical.get("conversation_id") or canonical.get("_id")
+        # Always use the deterministic ID as the canonical conversation ID.
+        # A legacy document may have an _id that differs from conversation_id.
+        canonical_id = f"direct-{low_id}-{high_id}"
         latest_updated = max(
             (doc.get("updated_at") for doc in documents if doc.get("updated_at") is not None),
             key=timestamp,
@@ -481,8 +483,9 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
                 if old_id is not None:
                     duplicate_ids.append(old_id)
 
-        if duplicate_ids:
-            await conversations_collection.delete_many({"_id": {"$in": duplicate_ids}})
+        # Keep legacy conversation documents until the merge has been verified.
+        # The frontend hides duplicate participant pairs, while preserving old records
+        # gives us a recovery path if a legacy message references an unexpected ID.
 
         # Legacy conversations may have stale/missing updated_at values. Derive
         # activity from the newest preserved message after all history is moved.
