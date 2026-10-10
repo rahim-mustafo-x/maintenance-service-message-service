@@ -148,22 +148,23 @@ class MessageMembersManager:
                         try:
                             payload = json.loads(data)
                             chat_id = payload["chat_id"]
-                            msg_text = payload["message"]
+                            raw_message = payload["message"]
+                            # The publisher stores the message as JSON; decode it once
+                            # so clients receive the actual message fields, not escaped JSON.
+                            msg_payload = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
 
-                            # Deliver to all local members associated with this chat
+                            # Route only to local sockets currently viewing this conversation.
                             for session_id, member in list(self.members.items()):
-                                # Check presence of each local member
-                                current = await presence.get_presence(
-                                    # The member tuple is (websocket, session)
-                                    member[1].user_id if hasattr(member[1], 'user_id') else None
-                                )
-                                if current and current.chat_id == chat_id:
+                                member_session = member[1]
+                                current = await presence.get_presence(member_session.user_id)
+                                if (
+                                    current
+                                    and current.session_id == session_id
+                                    and member_session.chat_id == chat_id
+                                ):
                                     await member[0].send_text(json.dumps({
                                         "type": "MESSAGE",
-                                        "payload": {
-                                            "text": msg_text,
-                                            "who_sent": "other"
-                                        }
+                                        "payload": msg_payload
                                     }))
                         except Exception as e:
                             print(f"Error processing broadcast: {e}")
