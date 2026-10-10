@@ -216,7 +216,7 @@ jobs:
               'import os,sys; h=os.getenv("REDIS_HOST",""); p=os.getenv("REDIS_PORT",""); print(f"REDIS_HOST configured: {bool(h)}; REDIS_PORT configured: {bool(p)}"); sys.exit(0 if h == "maintenance-redis" and p == "6379" else 1)'
 
           echo "Checking Redis connectivity from message service..."
-          docker exec message-service python -c '
+          docker exec message-service .venv/bin/python -c '
           import asyncio, os
           from redis.asyncio import Redis
 
