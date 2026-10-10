@@ -690,7 +690,12 @@
                 }
 
                 elements.userSearchStatus.textContent = `Found ${users.length} user(s). Select one to start chatting.`;
-                users.filter(user => Number(user.userId) !== Number(currentUserId)).forEach(user => {
+                users.filter(user => {
+                    const candidateId = user.userId ?? user.id;
+                    return candidateId != null && Number(candidateId) !== Number(currentUserId);
+                }).forEach(user => {
+                    const targetUserId = user.userId ?? user.id;
+                    const displayUserName = user.name || user.fullName || `User ${targetUserId}`;
                     const button = document.createElement('button');
                     button.type = 'button';
                     button.className = 'user-result';
@@ -703,21 +708,21 @@
                         img.alt = '';
                         avatar.appendChild(img);
                     } else {
-                        avatar.textContent = (user.name || '?').charAt(0).toUpperCase();
+                        avatar.textContent = displayUserName.charAt(0).toUpperCase();
                     }
 
                     const name = document.createElement('span');
                     name.className = 'user-name';
                     name.textContent = user.phoneNumber
-                        ? `${user.name || 'User ' + user.userId} · ${user.phoneNumber}`
-                        : (user.name || `User ${user.userId}`);
+                        ? `${displayUserName} · ${user.phoneNumber}`
+                        : displayUserName;
 
                     const action = document.createElement('span');
                     action.className = 'start-label';
                     action.textContent = 'Chat →';
 
                     button.append(avatar, name, action);
-                    button.onclick = () => createConversationWith(user, button);
+                    button.onclick = () => createConversationWith({ ...user, userId: targetUserId, name: displayUserName }, button);
                     elements.userSearchResults.appendChild(button);
                 });
             } catch (error) {
