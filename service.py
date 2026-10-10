@@ -297,37 +297,66 @@ async def handle_get_history(session, payload, request_id, websocket):
         "payload": data.model_dump()
     }))
 
+async def get_user_service_data(path: str, auth: str):
+    """Call USER-SERVICE through Eureka, forwarding the caller's JWT."""
+    from py_eureka_client.eureka_client import do_service_async
+
+    response = await do_service_async(
+        "USER-SERVICE",
+        path,
+        return_type="json",
+        headers={"Authorization": auth},
+        timeout=5,
+    )
+    if not isinstance(response, dict):
+        raise RuntimeError("USER-SERVICE returned an invalid response")
+    if response.get("code") not in (200, 302):
+        raise RuntimeError(response.get("message") or "USER-SERVICE request failed")
+    return response.get("data")
+
+
 async def create_conversation(
     auth: str,
     target_user_id: int,
 ) -> Conversation | None:
     user_id = user_id_from_auth(auth)
-    if user_id == -1:
+    if user_id == -1 or target_user_id == user_id:
         return None
 
     from repository import ConversationRepository
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
     from model import Conversation
+    from urllib.parse import quote
     import uuid
+
+    # Resolve the participant from USER-SERVICE via Eureka, not MongoDB.
+    target_user = await get_user_service_data(f"/v1/user/{target_user_id}", auth)
+    if not isinstance(target_user, dict) or target_user.get("id") is None:
+        return None
+    target_name = target_user.get("fullName") or target_user.get("userName") or f"User {target_user_id}"
 
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
 
-    # Check if conversation already exists
     existing = await repo.get_page(
         query={"people": {"$all": [user_id, target_user_id]}},
         page=1,
         size=1
     )
-
     if existing.items:
-        return existing.items[0]
+        conversation = existing.items[0]
+        if conversation.name == "New Chat":
+            await repo.update_fields(
+                conversation.conversation_id,
+                {"name": target_name}
+            )
+            conversation.name = target_name
+        return conversation
 
-    # Create new one
     new_conv = Conversation(
         conversation_id=str(uuid.uuid4()),
-        name="New Chat", # In a real app, fetch the target user's name
+        name=target_name,
         people=[user_id, target_user_id]
     )
     await repo.create_conversation(new_conv)
@@ -373,24 +402,26 @@ async def search_users(
     auth: str,
     query: str,
 ) -> List[dict]:
-    try:
-        user_id = user_id_from_auth(auth)
-        if user_id == -1:
-            return []
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        return []
 
-        from repository import UserRepository
-        from config import MONGODB_URL
-        from motor.motor_asyncio import AsyncIOMotorClient
+    from urllib.parse import quote
 
-        client = AsyncIOMotorClient(MONGODB_URL)
-        repo = UserRepository(client, "maintenance_service")
+    # USER-SERVICE owns user identity and search; message-service only stores chats.
+    data = await get_user_service_data(
+        f"/v1/user/search?q={quote(query)}",
+        auth,
+    )
+    if not isinstance(data, list):
+        return []
 
-        page = await repo.search_users(query)
-
-        return [
-            {"userId": u.user_id, "name": u.name, "avatar": u.profile_image}
-            for u in page.items
-        ]
-    except Exception as e:
-        print(f"MongoDB Search Error: {e}")
-        raise e
+    return [
+        {
+            "userId": user.get("id"),
+            "name": user.get("fullName") or user.get("userName") or f"User {user.get('id')}",
+            "avatar": None,
+        }
+        for user in data
+        if isinstance(user, dict) and user.get("id") is not None
+    ]
