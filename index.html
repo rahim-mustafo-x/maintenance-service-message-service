@@ -251,7 +251,7 @@
         .edit-message-actions .primary { background: var(--primary); color: white; }
         .edit-message-actions button:disabled { opacity: .55; cursor: wait; }
         .input-area { flex-wrap: wrap; }
-        .input-area #image-url-input { flex-basis: 100%; min-width: 0; }
+        .file-pick { padding:.65rem .8rem; border:1px solid var(--border); border-radius:.5rem; cursor:pointer; background:#fff; white-space:nowrap; }
 
         @media (max-width: 640px) {
             .sidebar { width: 42%; min-width: 145px; }
@@ -298,9 +298,11 @@
             <div class="edit-message-body">
                 <label for="edit-message-text">Message text</label>
                 <textarea id="edit-message-text" rows="3" maxlength="10000" placeholder="Write a message (optional when images are attached)"></textarea>
-                <label for="edit-message-images">Image URLs (one URL per line)</label>
-                <textarea id="edit-message-images" rows="3" placeholder="https://.../image.jpg"></textarea>
-                <small style="color:var(--text-muted)">Use URLs returned by Image Service. Up to 10 images. Leave text or at least one image.</small>
+                <label>Current images</label>
+                <div id="edit-current-images" style="display:flex;gap:.5rem;flex-wrap:wrap"></div>
+                <label for="edit-message-files">Add images from your device</label>
+                <input id="edit-message-files" type="file" accept="image/*" multiple />
+                <small style="color:var(--text-muted)">Choose image files. Image links are managed automatically.</small>
                 <div id="edit-message-status" class="modal-status" style="padding:.2rem 0 0"></div>
             </div>
             <div class="edit-message-actions">
@@ -337,7 +339,9 @@
                 </div>
                 <div class="input-area">
                     <input type="text" id="msg-input" placeholder="Type a message..." />
-                    <input type="url" id="image-url-input" placeholder="Image URL (optional, from Image Service)" aria-label="Image URL" />
+                    <label class="file-pick" for="image-file-input">📎 Add images</label>
+                    <input type="file" id="image-file-input" accept="image/*" multiple hidden />
+                    <span id="selected-files-label" style="font-size:.85rem;color:var(--text-muted)"></span>
                     <button id="send-btn">Send</button>
                 </div>
             </div>
@@ -376,13 +380,15 @@
             userSearchInput: document.getElementById('user-search-input'),
             userSearchStatus: document.getElementById('user-search-status'),
             userSearchResults: document.getElementById('user-search-results'),
-            imageUrlInput: document.getElementById('image-url-input'),
+            imageFileInput: document.getElementById('image-file-input'),
+            selectedFilesLabel: document.getElementById('selected-files-label'),
             messageContextMenu: document.getElementById('message-context-menu'),
             contextEditMessage: document.getElementById('context-edit-message'),
             contextDeleteMessage: document.getElementById('context-delete-message'),
             editMessageModal: document.getElementById('edit-message-modal'),
             editMessageText: document.getElementById('edit-message-text'),
-            editMessageImages: document.getElementById('edit-message-images'),
+            editMessageFiles: document.getElementById('edit-message-files'),
+            editCurrentImages: document.getElementById('edit-current-images'),
             editMessageStatus: document.getElementById('edit-message-status'),
             saveEditMessageBtn: document.getElementById('save-edit-message-btn'),
             closeEditMessageBtn: document.getElementById('close-edit-message-btn'),
@@ -543,8 +549,9 @@
                         if (elements.msgInput.value.trim() === pending.text) {
                             elements.msgInput.value = "";
                         }
-                        if (elements.imageUrlInput.value.trim() === (pending.images?.[0] || "")) {
-                            elements.imageUrlInput.value = "";
+                        if (pending.fileSignature === selectedFileSignature()) {
+                            elements.imageFileInput.value = "";
+                            elements.selectedFilesLabel.textContent = "";
                         }
                         loadConversations();
                     }
@@ -826,7 +833,16 @@
             hideMessageMenu();
             if (!message || Number(message.who_sent) !== Number(currentUserId)) return;
             elements.editMessageText.value = message.text || '';
-            elements.editMessageImages.value = Array.isArray(message.images) ? message.images.join('\n') : '';
+            elements.editCurrentImages.innerHTML = '';
+            (Array.isArray(message.images) ? message.images : []).forEach(url => {
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = 'Attached image';
+                img.loading = 'lazy';
+                img.style.cssText = 'width:72px;height:72px;object-fit:cover;border-radius:.5rem';
+                elements.editCurrentImages.appendChild(img);
+            });
+            elements.editMessageFiles.value = '';
             elements.editMessageStatus.textContent = '';
             elements.saveEditMessageBtn.disabled = false;
             elements.editMessageModal.classList.remove('hidden');
@@ -845,28 +861,43 @@
             const message = contextMessage;
             if (!message || !messageId(message)) return;
             const text = elements.editMessageText.value.trim();
-            const images = elements.editMessageImages.value
-                .split('\n').map(url => url.trim()).filter(Boolean);
-
-            if (!text && images.length === 0) {
-                elements.editMessageStatus.textContent = 'Enter text or at least one image URL.';
+            const files = Array.from(elements.editMessageFiles.files || []);
+            if (!text && !(message.images || []).length && !files.length) {
+                elements.editMessageStatus.textContent = 'Enter text or attach at least one image.';
                 return;
             }
-            if (images.length > 10 || images.some(url => !/^https?:\/\//i.test(url))) {
-                elements.editMessageStatus.textContent = 'Use up to 10 absolute HTTP/HTTPS image URLs.';
+            if (files.length + (message.images || []).length > 10) {
+                elements.editMessageStatus.textContent = 'A message can contain at most 10 images.';
                 return;
             }
 
             elements.saveEditMessageBtn.disabled = true;
-            elements.editMessageStatus.textContent = 'Saving…';
+            elements.editMessageStatus.textContent = files.length ? 'Uploading images…' : 'Saving…';
             try {
+                let images = Array.isArray(message.images) ? [...message.images] : [];
+                let image_ids = Array.isArray(message.image_ids) ? [...message.image_ids] : [];
+                if (files.length) {
+                    const form = new FormData();
+                    files.forEach(file => form.append('files', file));
+                    const uploadResponse = await fetch('/v1/messages/images', {
+                        method: 'POST',
+                        headers: { 'Authorization': authorizationHeader() },
+                        body: form
+                    });
+                    const uploadBody = await uploadResponse.json().catch(() => ({}));
+                    if (!uploadResponse.ok) throw new Error(uploadBody.detail || 'Image upload failed');
+                    images = [...images, ...(uploadBody.images || [])];
+                    image_ids = [...image_ids, ...(uploadBody.image_ids || [])];
+                }
+                if (images.length > 10) throw new Error('A message can contain at most 10 images.');
+                elements.editMessageStatus.textContent = 'Saving…';
                 const response = await fetch(`/v1/messages/${encodeURIComponent(messageId(message))}`, {
                     method: 'PATCH',
                     headers: {
                         'Authorization': authorizationHeader(),
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ text, images })
+                    body: JSON.stringify({ text, images, image_ids })
                 });
                 const body = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(body.detail || `Edit failed (${response.status})`);
@@ -919,30 +950,62 @@
             renderMessages(currentMessages);
         }
 
-        function sendMessage() {
+        function selectedFileSignature() {
+            return Array.from(elements.imageFileInput.files || [])
+                .map(file => `${file.name}:${file.size}:${file.lastModified}`).join('|');
+        }
+
+        async function uploadSelectedFiles(files) {
+            const form = new FormData();
+            files.forEach(file => form.append('files', file));
+            const response = await fetch('/v1/messages/images', {
+                method: 'POST',
+                headers: { 'Authorization': authorizationHeader() },
+                body: form
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(body.detail || 'Image upload failed');
+            return body;
+        }
+
+        async function sendMessage() {
             const text = elements.msgInput.value.trim();
-            const imageUrl = elements.imageUrlInput.value.trim();
-            const images = imageUrl ? [imageUrl] : [];
-            if ((!text && images.length === 0) || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
-            if (images.some(url => !/^https?:\/\//i.test(url))) {
-                alert('Image URL must start with http:// or https://');
+            const files = Array.from(elements.imageFileInput.files || []);
+            if ((!text && files.length === 0) || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
+            if (files.length > 10) {
+                alert('A message can contain at most 10 images.');
                 return;
             }
 
-            const requestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            pendingMessageRequests.set(requestId, { text, images, conversationId: currentChatId });
-
+            elements.sendBtn.disabled = true;
+            const fileSignature = selectedFileSignature();
             try {
+                let images = [];
+                let image_ids = [];
+                if (files.length) {
+                    elements.sendBtn.textContent = 'Uploading…';
+                    const uploaded = await uploadSelectedFiles(files);
+                    images = uploaded.images || [];
+                    image_ids = uploaded.image_ids || [];
+                }
+                if (!socket || socket.readyState !== WebSocket.OPEN || !currentChatId) {
+                    throw new Error('Chat connection was lost. Your message draft is still here.');
+                }
+                const requestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                pendingMessageRequests.set(requestId, {
+                    text, images, image_ids, files, fileSignature, conversationId: currentChatId
+                });
                 socket.send(JSON.stringify({
                     type: "SEND_MESSAGE",
                     request_id: requestId,
-                    payload: { text: text || null, images }
+                    payload: { text: text || null, images, image_ids }
                 }));
-                // Keep both drafts until the server acknowledges MongoDB persistence.
             } catch (error) {
-                pendingMessageRequests.delete(requestId);
                 console.error("Message could not be sent:", error);
-                alert("Xabar yuborilmadi. Matn va rasm URL'i saqlandi, qayta urinib ko'ring.");
+                alert(error.message || 'Message could not be sent. Your text and selected files remain.');
+            } finally {
+                elements.sendBtn.disabled = false;
+                elements.sendBtn.textContent = 'Send';
             }
         }
 
@@ -1093,7 +1156,14 @@
         elements.loginBtn.onclick = connect;
         elements.sendBtn.onclick = sendMessage;
         elements.msgInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
-        elements.imageUrlInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+        elements.imageFileInput.onchange = () => {
+            const count = elements.imageFileInput.files?.length || 0;
+            elements.selectedFilesLabel.textContent = count ? `${count} image(s) selected` : '';
+        };
+        elements.editMessageFiles.onchange = () => {
+            const count = elements.editMessageFiles.files?.length || 0;
+            if (count > 10) elements.editMessageStatus.textContent = 'Choose no more than 10 image files.';
+        };
         elements.logoutBtn.onclick = () => { location.reload(); };
 
     </script>
