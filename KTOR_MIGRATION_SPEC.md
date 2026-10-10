@@ -55,7 +55,7 @@ The Python Message Service now resolves display identity from USER-SERVICE rathe
 - **Redis presence:** `user:{userId}:session` stores the session ID, user ID, display name, optional profile image, active chat metadata, and TTL. Do not store the bearer token. Each binary PONG refreshes the TTL and rewrites the session JSON only if its `session_id` still matches, using an atomic Redis Lua compare-and-set so an old socket cannot refresh or overwrite a newer socket's presence.
 - **Conversation lists:** REST `GET /v1/conversations` and WebSocket `LIST_CONVERSATIONS` return each direct conversation personalized for the authenticated viewer. The existing `name` field must be the *other participant's* display name, not the shared MongoDB `Conversation.name`. Also expose `peer_user_id`, `peer_name`, and `peer_phone_number` for explicit client use. Resolve peer identity through USER-SERVICE even when the peer is offline; do not rely on Redis presence for names.
 - **Messages:** persist `sender_name` on newly created messages using the authenticated session profile. Include `sender_name` and `who_sent` in `MESSAGE_SENT`, normal message broadcasts, `message.updated`, and `message.deleted` events. For legacy history rows without `sender_name`, the backend resolves names from USER-SERVICE and returns the same field, so clients can render names without maintaining a separate ID-to-name lookup.
-- **Caching:** a bounded five-minute in-process profile cache avoids calling USER-SERVICE for every conversation row. A reconnect refreshes the session's current profile. Do not call USER-SERVICE on every heartbeat; heartbeat only persists the already-resolved profile and renews the session TTL.
+- **Caching:** a bounded five-minute in-process profile cache avoids calling USER-SERVICE for every conversation row. The session profile is refreshed on reconnect when the five-minute profile cache expires; do not call USER-SERVICE on every heartbeat. Do not call USER-SERVICE on every heartbeat; heartbeat only persists the already-resolved profile and renews the session TTL.
 - **Ktor parity:** implement the same profile DTO, name fallback order, five-minute bounded cache (or a suitable shared cache), peer-specific conversation response, message `sender_name`, and atomic session-owned heartbeat refresh. Keep bearer tokens out of MongoDB/Redis and logs. Keep shared conversation storage viewer-neutral; never permanently overwrite `Conversation.name` with one participant's personalized name.
 
 Example direct-conversation response fields:
@@ -235,6 +235,9 @@ Follow existing project conventions if they already provide equivalent component
 - [ ] PATCH enforces author authorization; DELETE allows either conversation participant but rejects outsiders; both broadcast only after persistence.
 - [ ] Refresh/reconnect reloads history from MongoDB.
 - [ ] Correct peer name is displayed for both participants, online or offline.
+- [ ] REST and WebSocket conversation lists expose the peer's `name`, `peer_name`, `peer_user_id`, and `peer_phone_number`.
+- [ ] `CONVERSATION_OPENED`, new message broadcasts, edits, deletes, and history responses expose backend-resolved peer/sender display names.
+- [ ] Heartbeat refresh atomically persists the session's display name and TTL only if the same session still owns the Redis presence key.
 - [ ] Heartbeat and Redis presence correctly enforce one active websocket per user.
 - [ ] Expired or replaced sessions cannot delete current presence.
 - [ ] No raw tokens are stored in MongoDB/Redis or logs.
