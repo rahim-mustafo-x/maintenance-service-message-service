@@ -213,6 +213,7 @@ async def handle_list_conversations(session, payload, request_id, websocket):
 
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
+    await normalize_direct_conversations(client, session.user_id)
 
     page = payload.get("page", 1)
     size = payload.get("size", 10)
@@ -396,6 +397,13 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
     """
     from datetime import datetime, timezone
 
+    def timestamp(value) -> float:
+        if not isinstance(value, datetime):
+            return 0.0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
     db = client["maintenance_service"]
     conversations_collection = db["conversations"]
     rooms_collection = db["rooms"]
@@ -415,19 +423,16 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
 
     for (low_id, high_id), documents in groups.items():
         canonical_id = f"direct-{low_id}-{high_id}"
+        # Repository lookups use MongoDB _id, so the canonical document must
+        # have that exact key, not merely a matching conversation_id field.
         canonical = next(
-            (doc for doc in documents
-             if doc.get("_id") == canonical_id
-             or doc.get("conversation_id") == canonical_id),
+            (doc for doc in documents if doc.get("_id") == canonical_id),
             None,
         )
 
         if canonical is None:
             # Prefer the most recently active legacy record as the source metadata.
-            source = max(
-                documents,
-                key=lambda doc: doc.get("updated_at") or datetime.min.replace(tzinfo=timezone.utc),
-            )
+            source = max(documents, key=lambda doc: timestamp(doc.get("updated_at")))
             canonical = {
                 "_id": canonical_id,
                 "conversation_id": canonical_id,
@@ -436,6 +441,7 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
                 "people": [low_id, high_id],
                 "updated_at": max(
                     (doc.get("updated_at") for doc in documents if doc.get("updated_at") is not None),
+                    key=timestamp,
                     default=datetime.now(timezone.utc),
                 ),
             }
@@ -450,6 +456,7 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
         canonical_id = canonical.get("conversation_id") or canonical.get("_id")
         latest_updated = max(
             (doc.get("updated_at") for doc in documents if doc.get("updated_at") is not None),
+            key=timestamp,
             default=canonical.get("updated_at") or datetime.now(timezone.utc),
         )
         await conversations_collection.update_one(
@@ -476,6 +483,20 @@ async def normalize_direct_conversations(client, user_id: int) -> None:
 
         if duplicate_ids:
             await conversations_collection.delete_many({"_id": {"$in": duplicate_ids}})
+
+        # Legacy conversations may have stale/missing updated_at values. Derive
+        # activity from the newest preserved message after all history is moved.
+        latest_message = await rooms_collection.find(
+            {"conversation_id": canonical_id},
+            {"created_at": 1},
+        ).sort("created_at", -1).limit(1).to_list(length=1)
+        if latest_message and latest_message[0].get("created_at") is not None:
+            message_time = latest_message[0]["created_at"]
+            if timestamp(message_time) > timestamp(latest_updated):
+                await conversations_collection.update_one(
+                    {"_id": canonical_id},
+                    {"$set": {"updated_at": message_time}},
+                )
 
 
 async def create_conversation(
