@@ -187,6 +187,25 @@ async def disconnect(
     )
 
 
+async def get_authorized_conversation(user_id: int, conversation_id: str):
+    """Return a direct conversation only when the user is one of its two participants."""
+    from repository import ConversationRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    if not conversation_id:
+        return None
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = ConversationRepository(client, "maintenance_service")
+    conversation = await repo.get_by_id(conversation_id)
+    if conversation is None:
+        return None
+    people = conversation.people or []
+    if len(people) != 2 or len(set(people)) != 2 or user_id not in people:
+        return None
+    return conversation
+
+
 async def handle_list_conversations(session, payload, request_id, websocket):
     from repository import ConversationRepository
     from config import MONGODB_URL
@@ -208,9 +227,9 @@ async def handle_list_conversations(session, payload, request_id, websocket):
     }))
 
 async def handle_open_conversation(session, payload, request_id, websocket):
+    import json
     chat_id = payload.get("chat_id")
     if not chat_id:
-        import json
         await websocket.send_text(json.dumps({
             "type": "ERROR",
             "request_id": request_id,
@@ -218,13 +237,21 @@ async def handle_open_conversation(session, payload, request_id, websocket):
         }))
         return
 
-    session.chat_id = chat_id
+    conversation = await get_authorized_conversation(session.user_id, chat_id)
+    if conversation is None:
+        session.chat_id = None
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "CONVERSATION_FORBIDDEN", "message": "Conversation not found or you are not a participant"}
+        }))
+        return
 
-    import json
+    session.chat_id = conversation.conversation_id
     await websocket.send_text(json.dumps({
         "type": "CONVERSATION_OPENED",
         "request_id": request_id,
-        "payload": {"chat_id": chat_id}
+        "payload": {"chat_id": conversation.conversation_id}
     }))
 
 async def handle_send_message(session, payload, request_id, websocket):
@@ -237,11 +264,32 @@ async def handle_send_message(session, payload, request_id, websocket):
     text = payload.get("text")
     images = payload.get("images", [])
 
+    if not isinstance(text, str) or not text.strip():
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "EMPTY_MESSAGE", "message": "Message text cannot be empty"}
+        }))
+        return
+    if not isinstance(images, list):
+        images = []
+
     if not session.chat_id:
         await websocket.send_text(json.dumps({
             "type": "ERROR",
             "request_id": request_id,
             "payload": {"code": "NO_ACTIVE_CHAT", "message": "No conversation opened"}
+        }))
+        return
+
+    # Validate membership on every send, not just when the chat is opened.
+    conversation = await get_authorized_conversation(session.user_id, session.chat_id)
+    if conversation is None:
+        session.chat_id = None
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "CONVERSATION_FORBIDDEN", "message": "Conversation not found or you are not a participant"}
         }))
         return
 
@@ -258,6 +306,9 @@ async def handle_send_message(session, payload, request_id, websocket):
         images=images
     )
     await repo.add(room)
+    from repository import ConversationRepository
+    conversation_repo = ConversationRepository(client, "maintenance_service")
+    await conversation_repo.update_fields(session.chat_id, {"updated_at": room_id})
 
     # 2. Broadcast via Redis
     msg_json = json.dumps(room.model_dump())
@@ -283,6 +334,16 @@ async def handle_get_history(session, payload, request_id, websocket):
             "type": "ERROR",
             "request_id": request_id,
             "payload": {"code": "NO_ACTIVE_CHAT", "message": "No conversation opened"}
+        }))
+        return
+
+    conversation = await get_authorized_conversation(session.user_id, session.chat_id)
+    if conversation is None:
+        session.chat_id = None
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "CONVERSATION_FORBIDDEN", "message": "Conversation not found or you are not a participant"}
         }))
         return
 
@@ -346,8 +407,9 @@ async def create_conversation(
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
 
+    # Direct messages must have exactly two participants, not merely contain both IDs.
     existing = await repo.get_page(
-        query={"people": {"$all": [user_id, target_user_id]}},
+        query={"people": {"$all": [user_id, target_user_id], "$size": 2}},
         page=1,
         size=1
     )
@@ -361,13 +423,26 @@ async def create_conversation(
             conversation.name = target_name
         return conversation
 
+    low_id, high_id = sorted((user_id, target_user_id))
+    # A stable ID prevents parallel requests from creating multiple DMs for the same pair.
+    conversation_id = f"direct-{low_id}-{high_id}"
+    existing_by_id = await repo.get_by_id(conversation_id)
+    if existing_by_id is not None:
+        return existing_by_id
+
     new_conv = Conversation(
-        conversation_id=str(uuid.uuid4()),
+        conversation_id=conversation_id,
         name=target_name,
-        people=[user_id, target_user_id]
+        people=[low_id, high_id]
     )
-    await repo.create_conversation(new_conv)
-    return new_conv
+    try:
+        await repo.create_conversation(new_conv)
+        return new_conv
+    except Exception:
+        existing_by_id = await repo.get_by_id(conversation_id)
+        if existing_by_id is not None:
+            return existing_by_id
+        raise
 
 async def conversations(
     auth: str,
@@ -387,23 +462,25 @@ async def conversations(
 
     return await repo.get_conversations_by_user(user_id, page, size)
 
-async def conversations(
+async def messages(
     auth: str,
+    conversation_id: str,
     page: int,
     size: int,
-) -> Page[Conversation] | None:
+) -> Page | None:
     user_id = user_id_from_auth(auth)
     if user_id == -1:
         return None
-
-    from repository import ConversationRepository
+    conversation = await get_authorized_conversation(user_id, conversation_id)
+    if conversation is None:
+        return None
+    from repository import RoomRepository
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
-
     client = AsyncIOMotorClient(MONGODB_URL)
-    repo = ConversationRepository(client, "maintenance_service")
+    repo = RoomRepository(client, "maintenance_service")
+    return await repo.get_messages(conversation_id, page, size)
 
-    return await repo.get_conversations_by_user(user_id, page, size)
 
 async def search_users(
     auth: str,
