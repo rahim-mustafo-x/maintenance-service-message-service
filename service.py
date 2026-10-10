@@ -308,7 +308,11 @@ async def handle_send_message(session, payload, request_id, websocket):
     await repo.add(room)
     from repository import ConversationRepository
     conversation_repo = ConversationRepository(client, "maintenance_service")
-    await conversation_repo.update_fields(session.chat_id, {"updated_at": room_id})
+    from datetime import datetime, timezone
+    await conversation_repo.update_fields(
+        session.chat_id,
+        {"updated_at": datetime.now(timezone.utc)}
+    )
 
     # 2. Broadcast via Redis
     msg_json = json.dumps(room.model_dump())
