@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Maintenance Chat</title>
+    <title>Maintenance Chat · Message Mutation Tester</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -222,6 +222,37 @@
         .user-result .user-name { flex: 1; font-weight: 600; }
         .user-result .start-label { color: var(--primary); font-size: .85rem; }
         .modal-status { padding: .5rem 1.25rem 1rem; color: var(--text-muted); font-size: .9rem; }
+
+        .message { cursor: context-menu; overflow-wrap: anywhere; }
+        .message.deleted { opacity: .72; font-style: italic; }
+        .message-context-menu {
+            position: fixed; z-index: 1200; min-width: 150px; padding: .35rem;
+            background: #fff; color: var(--text); border: 1px solid var(--border);
+            border-radius: .7rem; box-shadow: 0 12px 30px rgba(15,23,42,.2);
+        }
+        .message-context-menu button {
+            display: block; width: 100%; border: 0; background: transparent;
+            text-align: left; padding: .7rem .8rem; border-radius: .45rem;
+            color: var(--text); cursor: pointer; font: inherit;
+        }
+        .message-context-menu button:hover { background: var(--bg); }
+        .message-context-menu button.danger { color: #dc2626; }
+        .edit-message-body { padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .8rem; }
+        .edit-message-body label { font-size: .85rem; font-weight: 600; color: var(--text-muted); }
+        .edit-message-body textarea, .edit-message-body input {
+            width: 100%; box-sizing: border-box; border: 1px solid var(--border);
+            border-radius: .55rem; padding: .75rem; font: inherit; resize: vertical;
+        }
+        .edit-message-actions { display: flex; justify-content: flex-end; gap: .6rem; padding: 0 1.25rem 1.1rem; }
+        .edit-message-actions button {
+            border: 0; border-radius: .5rem; padding: .65rem 1rem; cursor: pointer; font-weight: 600;
+        }
+        .edit-message-actions .secondary { background: var(--bg); color: var(--text); }
+        .edit-message-actions .primary { background: var(--primary); color: white; }
+        .edit-message-actions button:disabled { opacity: .55; cursor: wait; }
+        .input-area { flex-wrap: wrap; }
+        .input-area #image-url-input { flex-basis: 100%; min-width: 0; }
+
         @media (max-width: 640px) {
             .sidebar { width: 42%; min-width: 145px; }
             .sidebar-header { padding: .9rem; flex-wrap: wrap; gap: .5rem; }
@@ -253,6 +284,32 @@
         </div>
     </div>
 
+    <div id="message-context-menu" class="message-context-menu hidden" role="menu" aria-label="Message actions">
+        <button id="context-edit-message" type="button" role="menuitem">✏️ Edit message</button>
+        <button id="context-delete-message" class="danger" type="button" role="menuitem">🗑 Delete message</button>
+    </div>
+
+    <div id="edit-message-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="edit-message-title">
+        <div class="modal-card">
+            <div class="modal-heading">
+                <h3 id="edit-message-title">Edit message</h3>
+                <button id="close-edit-message-btn" class="icon-btn" type="button" aria-label="Close">×</button>
+            </div>
+            <div class="edit-message-body">
+                <label for="edit-message-text">Message text</label>
+                <textarea id="edit-message-text" rows="3" maxlength="10000" placeholder="Write a message (optional when images are attached)"></textarea>
+                <label for="edit-message-images">Image URLs (one URL per line)</label>
+                <textarea id="edit-message-images" rows="3" placeholder="https://.../image.jpg"></textarea>
+                <small style="color:var(--text-muted)">Use URLs returned by Image Service. Up to 10 images. Leave text or at least one image.</small>
+                <div id="edit-message-status" class="modal-status" style="padding:.2rem 0 0"></div>
+            </div>
+            <div class="edit-message-actions">
+                <button id="cancel-edit-message-btn" class="secondary" type="button">Cancel</button>
+                <button id="save-edit-message-btn" class="primary" type="button">Save changes</button>
+            </div>
+        </div>
+    </div>
+
     <div class="main-container">
         <div class="sidebar">
             <div class="sidebar-header">
@@ -280,6 +337,7 @@
                 </div>
                 <div class="input-area">
                     <input type="text" id="msg-input" placeholder="Type a message..." />
+                    <input type="url" id="image-url-input" placeholder="Image URL (optional, from Image Service)" aria-label="Image URL" />
                     <button id="send-btn">Send</button>
                 </div>
             </div>
@@ -294,6 +352,10 @@
         let activeHistoryRequestId = null;
         // Keep each outgoing message pending until the server confirms MongoDB persistence.
         const pendingMessageRequests = new Map();
+        let currentMessages = [];
+        let contextMessage = null;
+        let longPressTimer = null;
+        let suppressContextMenu = false;
 
         const elements = {
             loginOverlay: document.getElementById('login-overlay'),
@@ -313,7 +375,18 @@
             closeNewChatBtn: document.getElementById('close-new-chat-btn'),
             userSearchInput: document.getElementById('user-search-input'),
             userSearchStatus: document.getElementById('user-search-status'),
-            userSearchResults: document.getElementById('user-search-results')
+            userSearchResults: document.getElementById('user-search-results'),
+            imageUrlInput: document.getElementById('image-url-input'),
+            messageContextMenu: document.getElementById('message-context-menu'),
+            contextEditMessage: document.getElementById('context-edit-message'),
+            contextDeleteMessage: document.getElementById('context-delete-message'),
+            editMessageModal: document.getElementById('edit-message-modal'),
+            editMessageText: document.getElementById('edit-message-text'),
+            editMessageImages: document.getElementById('edit-message-images'),
+            editMessageStatus: document.getElementById('edit-message-status'),
+            saveEditMessageBtn: document.getElementById('save-edit-message-btn'),
+            closeEditMessageBtn: document.getElementById('close-edit-message-btn'),
+            cancelEditMessageBtn: document.getElementById('cancel-edit-message-btn')
         };
 
         // Utils
@@ -470,7 +543,24 @@
                         if (elements.msgInput.value.trim() === pending.text) {
                             elements.msgInput.value = "";
                         }
+                        if (elements.imageUrlInput.value.trim() === (pending.images?.[0] || "")) {
+                            elements.imageUrlInput.value = "";
+                        }
                         loadConversations();
+                    }
+                    break;
+                }
+                case 'message.updated':
+                case 'MESSAGE_UPDATED': {
+                    if (String(payload?.conversation_id) === String(currentChatId)) {
+                        applyMessageUpdate(payload);
+                    }
+                    break;
+                }
+                case 'message.deleted':
+                case 'MESSAGE_DELETED': {
+                    if (String(payload?.conversation_id) === String(currentChatId)) {
+                        applyMessageDelete(payload);
                     }
                     break;
                 }
@@ -625,72 +715,232 @@
         }
 
         function renderMessages(messages) {
+            currentMessages = Array.isArray(messages) ? messages.slice() : [];
             elements.messages.innerHTML = "";
-            messages.forEach(msg => {
-                appendMessage(msg, Number(msg.who_sent) === Number(currentUserId) ? 'sent' : 'received');
-            });
+            currentMessages.forEach(msg => renderMessageNode(
+                msg,
+                Number(msg.who_sent) === Number(currentUserId) ? 'sent' : 'received'
+            ));
         }
 
         function appendMessage(msg, type) {
+            const id = messageId(msg);
+            if (id && currentMessages.some(existing => messageId(existing) === id)) return;
+            currentMessages.push(msg);
+            renderMessageNode(msg, type);
+        }
+
+        function messageId(msg) {
+            return String(msg?.room_id ?? msg?._id ?? msg?.message_id ?? '');
+        }
+
+        function renderMessageNode(msg, type) {
             const div = document.createElement('div');
-            div.className = `message ${type}`;
+            const deleted = Boolean(msg.is_deleted);
+            div.className = `message ${type}${deleted ? ' deleted' : ''}`;
+            div.dataset.messageId = messageId(msg);
+            div.dataset.conversationId = String(msg.conversation_id || currentChatId || '');
 
-            let messageText = typeof msg.text === 'string' ? msg.text : '';
-            // Be tolerant of messages produced by the old double-encoded broadcast.
-            try {
-                const parsed = JSON.parse(messageText);
-                if (parsed && typeof parsed === 'object') {
-                    messageText = typeof parsed.text === 'string' ? parsed.text : messageText;
+            if (deleted) {
+                const deletedText = document.createElement('div');
+                deletedText.textContent = 'This message was deleted';
+                div.appendChild(deletedText);
+            } else {
+                const textNode = document.createElement('div');
+                textNode.textContent = typeof msg.text === 'string' ? msg.text : '';
+                div.appendChild(textNode);
+
+                if (Array.isArray(msg.images) && msg.images.length) {
+                    const images = document.createElement('div');
+                    images.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;';
+                    msg.images.forEach(src => {
+                        if (typeof src !== 'string' || !/^https?:\/\//i.test(src)) return;
+                        const img = document.createElement('img');
+                        img.src = src;
+                        img.alt = 'Message attachment';
+                        img.loading = 'lazy';
+                        img.style.cssText = 'max-width:180px;max-height:180px;border-radius:6px;object-fit:cover;';
+                        img.onerror = () => img.remove();
+                        images.appendChild(img);
+                    });
+                    if (images.childElementCount) div.appendChild(images);
                 }
-            } catch (_) {
-                // Normal user-entered text is not JSON.
-            }
-
-            const textNode = document.createElement('div');
-            textNode.textContent = messageText;
-            div.appendChild(textNode);
-
-            if (Array.isArray(msg.images) && msg.images.length) {
-                const images = document.createElement('div');
-                images.style.cssText = 'display:flex;gap:5px;margin-top:5px;';
-                msg.images.forEach(src => {
-                    const img = document.createElement('img');
-                    img.src = src;
-                    img.alt = 'Message attachment';
-                    img.style.cssText = 'width:100px;border-radius:4px;object-fit:cover;';
-                    images.appendChild(img);
-                });
-                div.appendChild(images);
             }
 
             const meta = document.createElement('div');
             meta.className = 'message-meta';
-            meta.textContent = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            const time = msg.created_at ? new Date(msg.created_at) : new Date();
+            meta.textContent = `${Number(msg.who_sent) === Number(currentUserId) ? 'You' : 'Message'} · ${time.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}${msg.is_edited && !deleted ? ' · edited' : ''}`;
             div.appendChild(meta);
+
+            if (!deleted && Number(msg.who_sent) === Number(currentUserId) && messageId(msg)) {
+                div.addEventListener('contextmenu', event => {
+                    event.preventDefault();
+                    showMessageMenu(msg, event.clientX, event.clientY);
+                });
+                div.addEventListener('pointerdown', event => {
+                    if (event.pointerType !== 'touch') return;
+                    longPressTimer = setTimeout(() => {
+                        suppressContextMenu = true;
+                        showMessageMenu(msg, event.clientX, event.clientY);
+                    }, 550);
+                });
+                ['pointerup', 'pointerleave', 'pointercancel'].forEach(name => {
+                    div.addEventListener(name, () => {
+                        if (longPressTimer) clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    });
+                });
+                div.addEventListener('click', event => {
+                    if (suppressContextMenu) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        suppressContextMenu = false;
+                    }
+                });
+            }
 
             elements.messages.appendChild(div);
             elements.messages.scrollTop = elements.messages.scrollHeight;
         }
 
+        function showMessageMenu(message, x, y) {
+            contextMessage = message;
+            const menu = elements.messageContextMenu;
+            menu.classList.remove('hidden');
+            const width = menu.offsetWidth || 170;
+            const height = menu.offsetHeight || 100;
+            menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`;
+            menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - height - 8))}px`;
+        }
+
+        function hideMessageMenu() {
+            elements.messageContextMenu.classList.add('hidden');
+            contextMessage = null;
+        }
+
+        function openEditMessage() {
+            const message = contextMessage;
+            hideMessageMenu();
+            if (!message || Number(message.who_sent) !== Number(currentUserId)) return;
+            elements.editMessageText.value = message.text || '';
+            elements.editMessageImages.value = Array.isArray(message.images) ? message.images.join('\n') : '';
+            elements.editMessageStatus.textContent = '';
+            elements.saveEditMessageBtn.disabled = false;
+            elements.editMessageModal.classList.remove('hidden');
+            elements.editMessageText.focus();
+            contextMessage = message;
+        }
+
+        function closeEditMessage() {
+            elements.editMessageModal.classList.add('hidden');
+            contextMessage = null;
+            elements.saveEditMessageBtn.disabled = false;
+            elements.editMessageStatus.textContent = '';
+        }
+
+        async function saveEditMessage() {
+            const message = contextMessage;
+            if (!message || !messageId(message)) return;
+            const text = elements.editMessageText.value.trim();
+            const images = elements.editMessageImages.value
+                .split('\n').map(url => url.trim()).filter(Boolean);
+
+            if (!text && images.length === 0) {
+                elements.editMessageStatus.textContent = 'Enter text or at least one image URL.';
+                return;
+            }
+            if (images.length > 10 || images.some(url => !/^https?:\/\//i.test(url))) {
+                elements.editMessageStatus.textContent = 'Use up to 10 absolute HTTP/HTTPS image URLs.';
+                return;
+            }
+
+            elements.saveEditMessageBtn.disabled = true;
+            elements.editMessageStatus.textContent = 'Saving…';
+            try {
+                const response = await fetch(`/v1/messages/${encodeURIComponent(messageId(message))}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': authorizationHeader(),
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text, images })
+                });
+                const body = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(body.detail || `Edit failed (${response.status})`);
+                applyMessageUpdate(body);
+                closeEditMessage();
+            } catch (error) {
+                elements.editMessageStatus.textContent = error.message || 'Could not save message.';
+                elements.saveEditMessageBtn.disabled = false;
+            }
+        }
+
+        async function deleteContextMessage() {
+            const message = contextMessage;
+            hideMessageMenu();
+            if (!message || !messageId(message)) return;
+            if (!confirm('Delete this message for everyone?')) return;
+
+            try {
+                const response = await fetch(`/v1/messages/${encodeURIComponent(messageId(message))}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': authorizationHeader() }
+                });
+                const body = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(body.detail || `Delete failed (${response.status})`);
+                applyMessageDelete(body);
+            } catch (error) {
+                alert(error.message || 'Could not delete message.');
+            }
+        }
+
+        function applyMessageUpdate(updated) {
+            const id = messageId(updated);
+            if (!id) return;
+            currentMessages = currentMessages.map(message =>
+                messageId(message) === id
+                    ? { ...message, ...updated, room_id: id }
+                    : message
+            );
+            renderMessages(currentMessages);
+        }
+
+        function applyMessageDelete(deleted) {
+            const id = messageId(deleted);
+            if (!id) return;
+            currentMessages = currentMessages.map(message =>
+                messageId(message) === id
+                    ? { ...message, ...deleted, room_id: id, text: null, images: [], is_deleted: true }
+                    : message
+            );
+            renderMessages(currentMessages);
+        }
+
         function sendMessage() {
             const text = elements.msgInput.value.trim();
-            if (!text || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
+            const imageUrl = elements.imageUrlInput.value.trim();
+            const images = imageUrl ? [imageUrl] : [];
+            if ((!text && images.length === 0) || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
+            if (images.some(url => !/^https?:\/\//i.test(url))) {
+                alert('Image URL must start with http:// or https://');
+                return;
+            }
 
             const requestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            pendingMessageRequests.set(requestId, { text, conversationId: currentChatId });
+            pendingMessageRequests.set(requestId, { text, images, conversationId: currentChatId });
 
             try {
                 socket.send(JSON.stringify({
                     type: "SEND_MESSAGE",
                     request_id: requestId,
-                    payload: { text, images: [] }
+                    payload: { text: text || null, images }
                 }));
-                // Do not clear the composer yet. The server acknowledges only after
-                // MongoDB insert_one has completed; keep text visible if persistence fails.
+                // Keep both drafts until the server acknowledges MongoDB persistence.
             } catch (error) {
                 pendingMessageRequests.delete(requestId);
                 console.error("Message could not be sent:", error);
-                alert("Xabar yuborilmadi. Matn saqlandi, qayta urinib ko'ring.");
+                alert("Xabar yuborilmadi. Matn va rasm URL'i saqlandi, qayta urinib ko'ring.");
             }
         }
 
@@ -807,6 +1057,24 @@
             }
         }
 
+        elements.contextEditMessage.onclick = openEditMessage;
+        elements.contextDeleteMessage.onclick = deleteContextMessage;
+        elements.saveEditMessageBtn.onclick = saveEditMessage;
+        elements.closeEditMessageBtn.onclick = closeEditMessage;
+        elements.cancelEditMessageBtn.onclick = closeEditMessage;
+        elements.editMessageModal.onclick = event => {
+            if (event.target === elements.editMessageModal) closeEditMessage();
+        };
+        document.addEventListener('click', event => {
+            if (!elements.messageContextMenu.contains(event.target)) hideMessageMenu();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                hideMessageMenu();
+                closeEditMessage();
+            }
+        });
+
         elements.newChatBtn.onclick = openNewChatModal;
         elements.closeNewChatBtn.onclick = closeNewChatModal;
         elements.newChatModal.onclick = (event) => {
@@ -823,6 +1091,7 @@
         elements.loginBtn.onclick = connect;
         elements.sendBtn.onclick = sendMessage;
         elements.msgInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+        elements.imageUrlInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
         elements.logoutBtn.onclick = () => { location.reload(); };
 
     </script>
