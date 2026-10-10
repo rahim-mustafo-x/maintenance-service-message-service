@@ -16,7 +16,7 @@ from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
-from model import Page, Conversation, Room, EditMessageRequest
+from model import Page, Conversation, Room, EditMessageRequest, ImageCleanupRequest
 from config import APP_NAME
 import service
 
@@ -95,7 +95,6 @@ async def messages_v1(request: Request, conversation_id: str, page: int = 1, siz
 async def upload_message_images_v1(request: Request, files: list[UploadFile] = File(...)):
     """Upload local attachments through Image Service; clients never enter image URLs."""
     from image_client import upload_image, delete_image
-    from urllib.parse import urljoin
 
     auth = request.headers.get("Authorization")
     if auth is None:
@@ -142,6 +141,30 @@ async def upload_message_images_v1(request: Request, files: list[UploadFile] = F
         "images": [f"{public_prefix}/{image_id}" for image_id in uploaded],
         "image_ids": uploaded,
     }
+
+
+@v1_router.delete("/messages/images")
+async def cleanup_uploaded_images_v1(request: Request, body: ImageCleanupRequest):
+    """Delete unattached uploads owned by the authenticated user."""
+    from image_client import validate_owned_image, delete_image
+
+    auth = request.headers.get("Authorization")
+    if auth is None:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    user_id = service.user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        for image_id in body.image_ids:
+            await validate_owned_image(image_id, user_id)
+        for image_id in body.image_ids:
+            await delete_image(image_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image Service cleanup failed: {exc}") from exc
+    return {"deleted": len(body.image_ids)}
 
 
 @v1_router.patch("/messages/{message_id}", response_model=Room)
