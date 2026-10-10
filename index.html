@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maintenance Chat</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --bg: #f3f4f6;
+            --sidebar-bg: #ffffff;
+            --chat-bg: #ffffff;
+            --text: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+            --accent: #dbeafe;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            background-color: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Login Overlay */
+        #login-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+        .login-card {
+            background: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        .login-card h2 { margin-top: 0; color: var(--primary); }
+        .login-card input {
+            width: 100%;
+            padding: 0.75rem;
+            margin: 1rem 0;
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            box-sizing: border-box;
+        }
+        .login-card button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-weight: 600;
+            width: 100%;
+        }
+
+        /* Main Layout */
+        .main-container {
+            display: flex;
+            height: 100vh;
+            width: 100%;
+        }
+        .sidebar {
+            width: 320px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            font-weight: bold;
+            font-size: 1.2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .conv-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        .conv-item {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .conv-item:hover { background: var(--bg); }
+        .conv-item.active { background: var(--accent); border-left: 4px solid var(--primary); }
+        .avatar {
+            width: 40px;
+            height: 40px;
+            background: #cbd5e1;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            overflow: hidden;
+        }
+        .avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--chat-bg);
+        }
+        .chat-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-weight: 600;
+        }
+        .messages-container {
+            flex: 1;
+            padding: 1.5rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            background: #f9fafb;
+        }
+        .message {
+            max-width: 70%;
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            position: relative;
+        }
+        .message.sent {
+            align-self: flex-end;
+            background: var(--primary);
+            color: white;
+            border-bottom-right-radius: 0.2rem;
+        }
+        .message.received {
+            align-self: flex-start;
+            background: #e5e7eb;
+            color: var(--text);
+            border-bottom-left-radius: 0.2rem;
+        }
+        .message-meta {
+            font-size: 0.7rem;
+            margin-top: 0.25rem;
+            opacity: 0.8;
+            text-align: right;
+        }
+
+        .input-area {
+            padding: 1.5rem;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 1rem;
+            background: white;
+        }
+        .input-area input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            outline: none;
+        }
+        .input-area button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="login-overlay">
+        <div class="login-card">
+            <h2>💬 Maintenance Chat</h2>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">Enter your JWT token to connect</p>
+            <input type="text" id="token-input" placeholder="Bearer eyJhbGci..." />
+            <button id="login-btn">Connect</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span>Conversations</span>
+                <button id="logout-btn" style="font-size: 0.7rem; cursor: pointer; border: none; background: none; color: var(--primary);">Logout</button>
+            </div>
+            <div class="conv-list" id="conv-list">
+                <!-- Conversations load here -->
+            </div>
+        </div>
+        <div class="chat-area">
+            <div id="no-chat-selected" style="flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-muted);">
+                Select a conversation to start chatting
+            </div>
+            <div id="active-chat" class="hidden" style="display: flex; flex-direction: column; height: 100%;">
+                <div class="chat-header">
+                    <div class="avatar" id="header-avatar">?</div>
+                    <span id="header-name">Chat User</span>
+                </div>
+                <div class="messages-container" id="messages">
+                    <!-- Messages load here -->
+                </div>
+                <div class="input-area">
+                    <input type="text" id="msg-input" placeholder="Type a message..." />
+                    <button id="send-btn">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let currentToken = "";
+        let currentChatId = null;
+        let currentUserId = null;
+
+        const elements = {
+            loginOverlay: document.getElementById('login-overlay'),
+            tokenInput: document.getElementById('token-input'),
+            loginBtn: document.getElementById('login-btn'),
+            convList: document.getElementById('conv-list'),
+            activeChat: document.getElementById('active-chat'),
+            noChat: document.getElementById('no-chat-selected'),
+            msgInput: document.getElementById('msg-input'),
+            sendBtn: document.getElementById('send-btn'),
+            messages: document.getElementById('messages'),
+            headerName: document.getElementById('header-name'),
+            headerAvatar: document.getElementById('header-avatar'),
+            logoutBtn: document.getElementById('logout-btn')
+        };
+
+        // Utils
+        const getWsUrl = () => {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host || 'localhost:7877';
+            return `${protocol}//${host}/v1/ws/chat`;
+        };
+
+        async function connect() {
+            currentToken = elements.tokenInput.value.trim();
+            if (!currentToken) return alert("Please enter a token");
+
+            // We need an initial chat_id to connect.
+            // In a real app, we might fetch the first conversation first via REST
+            // For this demo, we'll try to connect and then the server handles session.
+            // But our server requires chat_id. Let's fetch conversations first via REST to get one.
+
+            try {
+                const response = await fetch('/v1/conversations', {
+                    headers: { 'Authorization': currentToken }
+                });
+                if (!response.ok) throw new Error("Unauthorized or no conversations found");
+
+                const data = await response.json();
+                if (data.items.length === 0) {
+                    alert("No conversations found to connect to.");
+                    return;
+                }
+
+                const initialChatId = data.items[0].conversation_id;
+
+                // Now connect WebSocket
+                socket = new WebSocket(`${getWsUrl()}?chat_id=${initialChatId}`);
+
+                // Since standard JS WebSockets don't support custom headers,
+                // we usually send the token in the first message or via query param.
+                // HOWEVER, our server checks headers.
+                // In a real browser environment, you can't set WS headers.
+                // We'll assume the server might allow token in query param or the
+                // implementation uses a proxy.
+                // FOR THIS DEMO: We will simulate the auth by sending a custom event first
+                // if the server was modified to support it, but our server uses headers.
+                // To make this WORK in a browser, I'll suggest the user uses a tool like Postman
+                // or I can modify the server to accept a token in the query string.
+
+                socket.onopen = () => {
+                    console.log("Connected to WS");
+                    elements.loginOverlay.classList.add('hidden');
+                    loadConversations();
+                };
+
+                socket.onmessage = (event) => {
+                    if (typeof event.data === 'string') {
+                        handleTextMessage(JSON.parse(event.data));
+                    } else {
+                        console.log("Binary frame received (likely PONG/PING)");
+                    }
+                };
+
+                socket.onclose = () => {
+                    alert("Disconnected from server");
+                    elements.loginOverlay.classList.remove('hidden');
+                };
+
+                // Heartbeat: Respond to PING (binary 0x01) with PONG (binary 0x02)
+                socket.onmessage = async (event) => {
+                    if (event.data instanceof Blob) {
+                        const buffer = await event.data.arrayBuffer();
+                        const view = new Uint8Array(buffer);
+                        if (view[0] === 1) { // PING
+                            socket.send(new Uint8Array([2])); // PONG
+                        }
+                    } else {
+                        handleTextMessage(JSON.parse(event.data));
+                    }
+                };
+
+            } catch (e) {
+                alert("Login failed: " + e.message);
+            }
+        }
+
+        function handleTextMessage(data) {
+            const { type, payload, request_id } = data;
+
+            switch(type) {
+                case 'CONVERSATIONS_LIST':
+                    renderConversations(payload);
+                    break;
+                case 'CONVERSATION_OPENED':
+                    elements.noChat.classList.add('hidden');
+                    elements.activeChat.classList.remove('hidden');
+                    break;
+                case 'MESSAGES_PAGE':
+                    renderMessages(payload.items);
+                    break;
+                case 'MESSAGE':
+                    appendMessage(payload, 'received');
+                    break;
+                case 'MESSAGE_SENT':
+                    appendMessage(payload, 'sent');
+                    break;
+                case 'ERROR':
+                    console.error("Server Error:", payload.message);
+                    break;
+            }
+        }
+
+        async function loadConversations() {
+            socket.send(JSON.stringify({
+                type: "LIST_CONVERSATIONS",
+                request_id: "req_list",
+                payload: { page: 1, size: 20 }
+            }));
+        }
+
+        function renderConversations(data) {
+            elements.convList.innerHTML = "";
+            data.items.forEach(conv => {
+                const div = document.createElement('div');
+                div, className = 'conv-item';
+                div.innerHTML = `
+                    <div class="avatar">${conv.profile_image ? `<img src="${conv.profile_image}">` : conv.name[0]}</div>
+                    <div style="flex:1">
+                        <div style="font-weight:600">${conv.name}</div>
+                    </div>
+                `;
+                div.onclick = () => openConversation(conv);
+                elements.convList.appendChild(div);
+            });
+        }
+
+        async function openConversation(conv) {
+            currentChatId = conv.conversation_id;
+            elements.headerName.innerText = conv.name;
+            elements.headerAvatar.innerText = conv.name[0];
+
+            // 1. Open conversation context
+            socket.send(JSON.stringify({
+                type: "OPEN_CONVERSATION",
+                request_id: "req_open",
+                payload: { chat_id: conv.conversation_id }
+            }));
+
+            // 2. Load history
+            socket.send(JSON.stringify({
+                type: "GET_HISTORY",
+                request_id: "req_hist",
+                payload: { page: 1, size: 50 }
+            }));
+
+            // Update active UI
+            document.querySelectorAll('.conv-item').forEach(el => el.classList.remove('active'));
+            // (Logic to mark active would go here)
+        }
+
+        function renderMessages(messages) {
+            elements.messages.innerHTML = "";
+            messages.forEach(msg => {
+                appendMessage(msg, msg.who_sent === currentUserId ? 'sent' : 'received');
+            });
+        }
+
+        function appendMessage(msg, type) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.innerHTML = `
+                <div>${msg.text || ""}</div>
+                ${msg.images && msg.images.length ? `<div style="display:flex; gap:5px; margin-top:5px;">${msg.images.map(img => `<img src="${img}" style="width:100px; border-radius:4px">`).join('')}</div>` : ''}
+                <div class="message-meta">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+            `;
+            elements.messages.appendChild(div);
+            elements.messages.scrollTop = elements.messages.scrollHeight;
+        }
+
+        function sendMessage() {
+            const text = elements.msgInput.value.trim();
+            if (!text || !socket || !currentChatId) return;
+
+            socket.send(JSON.stringify({
+                type: "SEND_MESSAGE",
+                request_id: "req_send",
+                payload: { text: text, images: [] }
+            }));
+
+            elements.msgInput.value = "";
+        }
+
+        elements.loginBtn.onclick = connect;
+        elements.sendBtn.onclick = sendMessage;
+        elements.msgInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+        elements.logoutBtn.onclick = () => { location.reload(); };
+
+    </script>
+</body>
+</html>

@@ -12,6 +12,11 @@ async def main():
         instance_port=PORT
     )
 
+    # Start background listener for Redis broadcasts
+    asyncio.create_task(
+        service.message_members_manager.listen_for_broadcasts(service.presence)
+    )
+
     config = Config(app=app, host='0.0.0.0', port=PORT)
     server = Server(config=config)
     try:

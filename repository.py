@@ -7,7 +7,7 @@ from typing import (
     Optional,
 )
 
-from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from pydantic import BaseModel
 
@@ -30,7 +30,7 @@ class BaseMongoRepository(
 
     def __init__(
         self,
-        client: MongoClient,
+        client: AsyncIOMotorClient,
         db_name: str,
         collection_name: str,
         model_class: Type[T],
@@ -51,7 +51,7 @@ class BaseMongoRepository(
     # CREATE
     # -------------------------
 
-    def add(
+    async def add(
         self,
         item: T
     ) -> str:
@@ -65,7 +65,7 @@ class BaseMongoRepository(
 
         data["_id"] = entity_id
 
-        self.collection.insert_one(
+        await self.collection.insert_one(
             data
         )
 
@@ -75,13 +75,13 @@ class BaseMongoRepository(
     # UPDATE
     # -------------------------
 
-    def update_fields(
+    async def update_fields(
         self,
         entity_id: str,
         updates: dict[str, Any],
     ) -> bool:
 
-        result = self.collection.update_one(
+        result = await self.collection.update_one(
             {"_id": entity_id},
             {
                 "$set": updates
@@ -94,7 +94,7 @@ class BaseMongoRepository(
     # REMOVE FIELDS
     # -------------------------
 
-    def remove_fields(
+    async def remove_fields(
         self,
         entity_id: str,
         fields_to_remove: List[str],
@@ -105,7 +105,7 @@ class BaseMongoRepository(
             for field in fields_to_remove
         }
 
-        result = self.collection.update_one(
+        result = await self.collection.update_one(
             {"_id": entity_id},
             {
                 "$unset": unset_dict
@@ -118,12 +118,12 @@ class BaseMongoRepository(
     # DELETE
     # -------------------------
 
-    def delete(
+    async def delete(
         self,
         entity_id: str
     ) -> bool:
 
-        result = self.collection.delete_one(
+        result = await self.collection.delete_one(
             {
                 "_id": entity_id
             }
@@ -135,12 +135,12 @@ class BaseMongoRepository(
     # GET BY ID
     # -------------------------
 
-    def get_by_id(
+    async def get_by_id(
         self,
         entity_id: str
     ) -> Optional[T]:
 
-        document = self.collection.find_one(
+        document = await self.collection.find_one(
             {
                 "_id": entity_id
             }
@@ -157,7 +157,7 @@ class BaseMongoRepository(
     # PAGE
     # -------------------------
 
-    def get_page(
+    async def get_page(
         self,
         query: dict,
         page: int,
@@ -174,10 +174,7 @@ class BaseMongoRepository(
             page - 1
         )
 
-        total_items = (
-            self.collection
-            .count_documents(query)
-        )
+        total_items = await self.collection.count_documents(query)
 
         total_pages = (
             (total_items + size - 1) // size
@@ -185,17 +182,11 @@ class BaseMongoRepository(
             else 0
         )
 
-        cursor = (
-            self.collection
-            .find(query)
-            .skip(skips)
-            .limit(size)
-        )
+        cursor = self.collection.find(query).skip(skips).limit(size)
 
-        items_list = [
-            self.model_class(**document)
-            for document in cursor
-        ]
+        items_list = []
+        async for document in cursor:
+            items_list.append(self.model_class(**document))
 
         return Page(
             items=items_list,
@@ -215,7 +206,7 @@ class RoomRepository(
 
     def __init__(
         self,
-        client: MongoClient,
+        client: AsyncIOMotorClient,
         db_name: str,
     ):
 
@@ -227,14 +218,14 @@ class RoomRepository(
             "room_id",
         )
 
-    def get_messages(
+    async def get_messages(
         self,
         conversation_id: str,
         page: int,
         size: int,
     ) -> Page[Room]:
 
-        return self.get_page(
+        return await self.get_page(
             query={
                 "conversation_id":
                     conversation_id
@@ -254,7 +245,7 @@ class ConversationRepository(
 
     def __init__(
         self,
-        client: MongoClient,
+        client: AsyncIOMotorClient,
         db_name: str,
     ):
 
@@ -266,7 +257,7 @@ class ConversationRepository(
             "conversation_id",
         )
 
-    def get_conversations_by_user(
+    async def get_conversations_by_user(
         self,
         user_id: int,
         page: int,
@@ -277,7 +268,7 @@ class ConversationRepository(
             "people": user_id
         }
 
-        return self.get_page(
+        return await self.get_page(
             query=query,
             page=page,
             size=size,

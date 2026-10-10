@@ -8,7 +8,9 @@ from fastapi import (
     HTTPException,
     Query,
     Depends,
+    APIRouter,
 )
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -20,11 +22,11 @@ import service
 
 _middleware = [
     Middleware(
-        CORSMiddleware,#type:ignore
-        allow_origins=["*"],#type:ignore
-        allow_credentials=True,#type:ignore
-        allow_methods=["*"],#type:ignore
-        allow_headers=["*"],#type:ignore
+        CORSMiddleware, #type:ignore
+        allow_origins=["*"], #type:ignore
+        allow_credentials=True, #type:ignore
+        allow_methods=["*"], #type:ignore
+        allow_headers=["*"], #type:ignore
     )
 ]
 bearer_scheme = HTTPBearer()
@@ -44,9 +46,13 @@ app = FastAPI(
     ],
 )
 
+# =============================================================================
+# VERSION 1 API
+# =============================================================================
+v1_router = APIRouter(prefix="/v1")
 
-@app.websocket("/ws/chat")
-async def websocket_endpoint(
+@v1_router.websocket("/ws/chat")
+async def websocket_endpoint_v1(
     websocket: WebSocket,
     chat_id: str | None = Query(default=None),
 ):
@@ -71,17 +77,25 @@ async def websocket_endpoint(
         return
 
     heartbeat_task = asyncio.create_task(
-        service.heartbeat(session)
+        service.heartbeat(session, websocket)
     )
 
     try:
         while True:
-            text = await websocket.receive_text()
+            # Receive either text or bytes
+            message = await websocket.receive()
 
-            await service.receive_text(
-                session,
-                text,
-            )
+            if "text" in message:
+                await service.receive_text(
+                    session,
+                    message["text"],
+                    websocket
+                )
+            elif "bytes" in message:
+                await service.receive_bytes(
+                    session,
+                    message["bytes"]
+                )
 
     except WebSocketDisconnect:
         pass
@@ -97,11 +111,11 @@ async def websocket_endpoint(
         await service.disconnect(session)
 
 
-@app.get(
+@v1_router.get(
     "/conversations",
     response_model=Page[Conversation],
 )
-async def conversations(
+async def conversations_v1(
     request: Request,
     page: int = 1,
     size: int = 10,
@@ -129,11 +143,11 @@ async def conversations(
     return data
 
 
-@app.get(
+@v1_router.get(
     "/conversations/{conversation_id}/messages",
     response_model=Page[Room],
 )
-async def messages(
+async def messages_v1(
     request: Request,
     conversation_id: str,
     page: int = 1,
@@ -153,3 +167,11 @@ async def messages(
         page=page,
         size=size,
     )
+
+# Include the V1 router into the main app
+app.include_router(v1_router)
+
+@app.get("/", response_class=HTMLResponse)
+async def get_home():
+    with open("index.html", "r") as f:
+        return f.read()

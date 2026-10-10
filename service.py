@@ -65,10 +65,6 @@ async def start_conversation(
     if user_id == -1:
         return None
 
-    old_session = await presence.get_presence(
-        user_id
-    )
-
     session = Session(
         session_id=str(uuid4()),
         user_id=user_id,
@@ -76,18 +72,16 @@ async def start_conversation(
         time_to_live=30,
     )
 
-    await presence.set_presence(
-        session
-    )
+    # Claim session and check if it superseded another
+    success, superseded = await presence.claim_session(session)
 
-    if old_session is not None:
-        await message_members_manager.close(
-            old_session.session_id
-        )
+    if not success:
+        return None
 
     await message_members_manager.connect(
         session.session_id,
         websocket,
+        session
     )
 
     return session
@@ -95,6 +89,7 @@ async def start_conversation(
 
 async def heartbeat(
     session: Session,
+    websocket: WebSocket
 ) -> None:
 
     try:
@@ -104,34 +99,23 @@ async def heartbeat(
                 HEARTBEAT_INTERVAL
             )
 
+            # Check if session still owns the presence
             current = await presence.get_presence(
                 session.user_id
             )
 
-            if current is None:
+            if current is None or current.session_id != session.session_id:
                 await message_members_manager.close(
                     session.session_id
                 )
                 return
 
-            if (
-                current.session_id
-                != session.session_id
-            ):
-                await message_members_manager.close(
-                    session.session_id
-                )
-                return
-
-            sent = await message_members_manager.send_message(
-                session.session_id,
-                PING,
-            )
-
-            if not sent:
-                await presence.delete_if_current(
-                    session
-                )
+            # Send binary PING
+            try:
+                await websocket.send_bytes(PING)
+            except Exception:
+                await presence.delete_if_current(session)
+                await message_members_manager.close(session.session_id)
                 return
 
     except CancelledError:
@@ -141,51 +125,52 @@ async def heartbeat(
 async def receive_text(
     session: Session,
     text: str,
+    websocket: WebSocket
 ) -> None:
+    import json
+    try:
+        data = json.loads(text)
+        event_type = data.get("type")
+        payload = data.get("payload", {})
+        request_id = data.get("request_id")
 
-    if text == PONG:
+        if event_type == "LIST_CONVERSATIONS":
+            await handle_list_conversations(session, payload, request_id, websocket)
+        elif event_type == "OPEN_CONVERSATION":
+            await handle_open_conversation(session, payload, request_id, websocket)
+        elif event_type == "SEND_MESSAGE":
+            await handle_send_message(session, payload, request_id, websocket)
+        elif event_type == "GET_HISTORY":
+            await handle_get_history(session, payload, request_id, websocket)
+        else:
+            await websocket.send_text(json.dumps({
+                "type": "ERROR",
+                "request_id": request_id,
+                "payload": {"code": "UNKNOWN_EVENT", "message": f"Event {event_type} not supported"}
+            }))
 
-        current = await presence.get_presence(
-            session.user_id
-        )
-
-        if current is None:
-            return
-
-        if (
-            current.session_id
-            != session.session_id
-        ):
-            return
-
-        await presence.refresh_presence(
-            session
-        )
-
-        return
-
-    await handle_message(
-        session,
-        text,
-    )
+    except json.JSONDecodeError:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "payload": {"code": "INVALID_JSON", "message": "Invalid JSON payload"}
+        }))
+    except Exception as e:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "payload": {"code": "INTERNAL_ERROR", "message": str(e)}
+        }))
 
 
-async def handle_message(
+async def receive_bytes(
     session: Session,
-    text: str,
+    data: bytes,
 ) -> None:
-
-    print(
-        f"user={session.user_id}"
-    )
-
-    print(
-        f"chat={session.chat_id}"
-    )
-
-    print(
-        f"text={text}"
-    )
+    if data == PONG:
+        # Only refresh if this session still owns the presence
+        if await presence.refresh_presence(session):
+            print(f"Heartbeat refreshed for user {session.user_id}")
+        else:
+            print(f"Heartbeat ignored for superseded session {session.session_id}")
 
 
 async def disconnect(
@@ -199,3 +184,113 @@ async def disconnect(
     await message_members_manager.close(
         session.session_id
     )
+
+async def handle_list_conversations(session, payload, request_id, websocket):
+    from repository import ConversationRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = ConversationRepository(client, "maintenance_service")
+
+    page = payload.get("page", 1)
+    size = payload.get("size", 10)
+
+    data = await repo.get_conversations_by_user(session.user_id, page, size)
+
+    import json
+    await websocket.send_text(json.dumps({
+        "type": "CONVERSATIONS_LIST",
+        "request_id": request_id,
+        "payload": data.model_dump()
+    }))
+
+async def handle_open_conversation(session, payload, request_id, websocket):
+    chat_id = payload.get("chat_id")
+    if not chat_id:
+        import json
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "MISSING_CHAT_ID", "message": "chat_id is required"}
+        }))
+        return
+
+    session.chat_id = chat_id
+
+    import json
+    await websocket.send_text(json.dumps({
+        "type": "CONVERSATION_OPENED",
+        "request_id": request_id,
+        "payload": {"chat_id": chat_id}
+    }))
+
+async def handle_send_message(session, payload, request_id, websocket):
+    from repository import RoomRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from model import Room
+    import json
+
+    text = payload.get("text")
+    images = payload.get("images", [])
+
+    if not session.chat_id:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "NO_ACTIVE_CHAT", "message": "No conversation opened"}
+        }))
+        return
+
+    # 1. Persist to DB
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = RoomRepository(client, "maintenance_service")
+
+    room_id = str(uuid4())
+    room = Room(
+        room_id=room_id,
+        conversation_id=session.chat_id,
+        text=text,
+        who_sent=session.user_id,
+        images=images
+    )
+    await repo.add(room)
+
+    # 2. Broadcast via Redis
+    msg_json = json.dumps(room.model_dump())
+    await message_members_manager.broadcast_message(session.chat_id, msg_json)
+
+    await websocket.send_text(json.dumps({
+        "type": "MESSAGE_SENT",
+        "request_id": request_id,
+        "payload": room.model_dump()
+    }))
+
+async def handle_get_history(session, payload, request_id, websocket):
+    from repository import RoomRepository
+    from config import MONGODB_URL
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import json
+
+    page = payload.get("page", 1)
+    size = payload.get("size", 10)
+
+    if not session.chat_id:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR",
+            "request_id": request_id,
+            "payload": {"code": "NO_ACTIVE_CHAT", "message": "No conversation opened"}
+        }))
+        return
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    repo = RoomRepository(client, "maintenance_service")
+
+    data = await repo.get_messages(session.chat_id, page, size)
+
+    await websocket.send_text(json.dumps({
+        "type": "MESSAGES_PAGE",
+        "request_id": request_id,
+        "payload": data.model_dump()
+    }))
