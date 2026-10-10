@@ -442,6 +442,7 @@
                     // Ignore its broadcast copy to avoid duplicate own messages.
                     if (Number(payload?.who_sent) !== Number(currentUserId)) {
                         appendMessage(payload, 'received');
+                        loadConversations();
                     }
                     break;
                 case 'MESSAGE_SENT':
