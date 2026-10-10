@@ -558,7 +558,8 @@
                     headers: { 'Authorization': currentToken }
                 });
                 if (!response.ok) throw new Error(`Search failed (${response.status})`);
-                const users = await response.json();
+                const result = await response.json();
+                const users = Array.isArray(result) ? result : result.data;
 
                 elements.userSearchResults.innerHTML = '';
                 if (!Array.isArray(users) || users.length === 0) {
