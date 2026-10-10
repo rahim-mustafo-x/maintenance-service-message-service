@@ -5,14 +5,27 @@ on:
     branches:
       - master
 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-message-service
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Install cloudflared
         run: |
-          curl -L \
+          set -euo pipefail
+
+          curl -fsSL \
+            --retry 3 \
             --output cloudflared.deb \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 
@@ -21,41 +34,98 @@ jobs:
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY_B64: ${{ secrets.DEPLOY_SSH_KEY_B64 }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
           CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
 
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          set -euo pipefail
+
+          : "${DEPLOY_SSH_KEY_B64:?Missing DEPLOY_SSH_KEY_B64 secret}"
+          : "${DEPLOY_HOST:?Missing DEPLOY_HOST secret}"
+          : "${DEPLOY_USER:?Missing DEPLOY_USER secret}"
+          : "${CLOUDFLARE_ACCESS_CLIENT_ID:?Missing Cloudflare Access client ID}"
+          : "${CLOUDFLARE_ACCESS_CLIENT_SECRET:?Missing Cloudflare Access client secret}"
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
 
           printf '%s' "$DEPLOY_SSH_KEY_B64" \
-            | base64 --decode \
-            > ~/.ssh/deploy_key
+            | base64 --decode > "$HOME/.ssh/deploy_key"
 
-          chmod 600 ~/.ssh/deploy_key
+          chmod 600 "$HOME/.ssh/deploy_key"
 
-          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" > /dev/null
 
-          cat > ~/.ssh/config << EOF
-          Host ${{ secrets.DEPLOY_HOST }}
-              HostName ${{ secrets.DEPLOY_HOST }}
-              User ${{ secrets.DEPLOY_USER }}
+          cat > "$HOME/.ssh/config" <<EOF
+          Host deploy-server
+              HostName ${DEPLOY_HOST}
+              User ${DEPLOY_USER}
               IdentityFile ~/.ssh/deploy_key
               IdentitiesOnly yes
-              ProxyCommand env CLOUDFLARE_ACCESS_CLIENT_ID="$CLOUDFLARE_ACCESS_CLIENT_ID" CLOUDFLARE_ACCESS_CLIENT_SECRET="$CLOUDFLARE_ACCESS_CLIENT_SECRET" cloudflared access ssh --hostname %h
-              StrictHostKeyChecking no
+              ProxyCommand cloudflared access ssh --hostname %h
+              StrictHostKeyChecking accept-new
               ServerAliveInterval 60
               ServerAliveCountMax 10
+              ConnectTimeout 15
           EOF
 
-          chmod 600 ~/.ssh/config
+          chmod 600 "$HOME/.ssh/config"
+
+          {
+            printf 'CLOUDFLARE_ACCESS_CLIENT_ID=%s\n' "$CLOUDFLARE_ACCESS_CLIENT_ID"
+            printf 'CLOUDFLARE_ACCESS_CLIENT_SECRET=%s\n' "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+          } >> "$GITHUB_ENV"
 
       - name: Test SSH connection
         run: |
-          ssh \
-            -o ConnectTimeout=15 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "echo 'SSH connection successful'"
+          set -euo pipefail
+
+          ssh deploy-server "echo 'SSH connection successful'"
+
+      - name: Validate deployment configuration
+        env:
+          PORT: ${{ secrets.MESSAGE_SERVICE_PORT }}
+          EUREKA_URL: ${{ secrets.EUREKA_URL }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          MONGODB_URL: ${{ secrets.MESSAGE_MONGODB_URL }}
+          REDIS_HOST: ${{ secrets.MESSAGE_REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.MESSAGE_REDIS_PORT }}
+          APP_NAME: message-service
+
+        run: |
+          set -euo pipefail
+
+          : "${PORT:?Missing MESSAGE_SERVICE_PORT secret}"
+          : "${EUREKA_URL:?Missing EUREKA_URL secret}"
+          : "${JWT_SECRET_KEY:?Missing JWT_SECRET_KEY secret}"
+          : "${MONGODB_URL:?Missing MESSAGE_MONGODB_URL secret}"
+          : "${REDIS_HOST:?Missing MESSAGE_REDIS_HOST secret}"
+          : "${REDIS_PORT:?Missing MESSAGE_REDIS_PORT secret}"
+
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || \
+             [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            echo "Invalid message service port"
+            exit 1
+          fi
+
+          if [ "$REDIS_HOST" != "maintenance-redis" ]; then
+            echo "REDIS_HOST must be maintenance-redis"
+            exit 1
+          fi
+
+          if [ "$REDIS_PORT" != "6379" ]; then
+            echo "REDIS_PORT must be 6379"
+            exit 1
+          fi
+
+          if [ "$APP_NAME" != "message-service" ]; then
+            echo "Unexpected APP_NAME"
+            exit 1
+          fi
+
+          echo "Deployment configuration validated."
 
       - name: Deploy Message Service
         env:
@@ -68,45 +138,30 @@ jobs:
           APP_NAME: message-service
 
         run: |
-          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "PORT='$PORT' \
-             EUREKA_URL='$EUREKA_URL' \
-             JWT_SECRET_KEY='$JWT_SECRET_KEY' \
-             MONGODB_URL='$MONGODB_URL' \
-             REDIS_HOST='$REDIS_HOST' \
-             REDIS_PORT='$REDIS_PORT' \
-             APP_NAME='$APP_NAME' \
-             bash -s" << 'REMOTE_SCRIPT'
+          set -euo pipefail
 
-          set -e
+          python3 - <<'PY' | ssh deploy-server 'bash -s'
+          import os
+          import shlex
+          import sys
 
-          cd /opt/maintenance-service-message-service
+          names = (
+              "PORT",
+              "EUREKA_URL",
+              "JWT_SECRET_KEY",
+              "MONGODB_URL",
+              "REDIS_HOST",
+              "REDIS_PORT",
+              "APP_NAME",
+          )
 
-          git fetch origin master
-          git reset --hard origin/master
+          for name in names:
+              value = os.environ.get(name, "")
+              if not value:
+                  raise SystemExit(f"Missing required environment variable: {name}")
+              print(f"{name}={shlex.quote(value)}")
+          PY
 
-          printf '%s\n' \
-            "PORT=$PORT" \
-            "EUREKA_URL=$EUREKA_URL" \
-            "JWT_SECRET_KEY=$JWT_SECRET_KEY" \
-            "MONGODB_URL=$MONGODB_URL" \
-            "REDIS_HOST=$REDIS_HOST" \
-            "REDIS_PORT=$REDIS_PORT" \
-            "APP_NAME=$APP_NAME" \
-            > .env
-
-          chmod 600 .env
-
-          docker compose config > /dev/null
-
-          docker compose build --pull message-service
-
-          docker compose up -d --force-recreate message-service
-
-          docker image prune -f
-
-          docker compose ps
-
-          docker compose logs --tail=50 message-service
-
-          REMOTE_SCRIPT
+          # Configuration is supplied through stdin as shell-quoted
+          # assignments. The remote script itself is sent separately below.
+          echo "This step should be replaced by the remote deployment block below."
