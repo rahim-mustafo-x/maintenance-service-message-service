@@ -142,11 +142,11 @@ async def receive_text(
         if event_type == "LIST_CONVERSATIONS":
             await handle_list_conversations(session, payload, request_id, websocket, auth)
         elif event_type == "OPEN_CONVERSATION":
-            await handle_open_conversation(session, payload, request_id, websocket)
+            await handle_open_conversation(session, payload, request_id, websocket, auth)
         elif event_type == "SEND_MESSAGE":
             await handle_send_message(session, payload, request_id, websocket)
         elif event_type == "GET_HISTORY":
-            await handle_get_history(session, payload, request_id, websocket)
+            await handle_get_history(session, payload, request_id, websocket, auth)
         else:
             await websocket.send_text(json.dumps({
                 "type": "ERROR",
@@ -232,7 +232,7 @@ async def handle_list_conversations(session, payload, request_id, websocket, aut
         "payload": data.model_dump(mode="json")
     }))
 
-async def handle_open_conversation(session, payload, request_id, websocket):
+async def handle_open_conversation(session, payload, request_id, websocket, auth):
     import json
     chat_id = payload.get("chat_id")
     if not chat_id:
@@ -254,10 +254,18 @@ async def handle_open_conversation(session, payload, request_id, websocket):
         return
 
     session.chat_id = conversation.conversation_id
+    peer_ids = [int(value) for value in (conversation.people or []) if int(value) != session.user_id]
+    peer = await get_user_profile(peer_ids[0], auth) if len(peer_ids) == 1 else None
     await websocket.send_text(json.dumps({
         "type": "CONVERSATION_OPENED",
         "request_id": request_id,
-        "payload": {"chat_id": conversation.conversation_id}
+        "payload": {
+            "chat_id": conversation.conversation_id,
+            "peer_user_id": peer["user_id"] if peer else None,
+            "peer_name": peer["name"] if peer else None,
+            "peer_phone_number": peer["phone_number"] if peer else None,
+            "name": peer["name"] if peer else conversation.name,
+        }
     }))
 
 async def _validated_image_urls(images) -> list[str]:
@@ -397,7 +405,7 @@ async def handle_send_message(session, payload, request_id, websocket):
     }))
 
 
-async def handle_get_history(session, payload, request_id, websocket):
+async def handle_get_history(session, payload, request_id, websocket, auth):
     from repository import RoomRepository
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -428,6 +436,7 @@ async def handle_get_history(session, payload, request_id, websocket):
     repo = RoomRepository(client, "maintenance_service")
 
     data = await repo.get_messages(session.chat_id, page, size)
+    data = await add_sender_names_to_page(data, auth)
 
     await websocket.send_text(json.dumps({
         "type": "MESSAGES_PAGE",
@@ -724,13 +733,20 @@ async def messages(
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = RoomRepository(client, "maintenance_service")
     data = await repo.get_messages(conversation_id, page, size)
-    # Backfill sender names for old messages written before sender_name was persisted.
+    return await add_sender_names_to_page(data, auth)
+
+
+async def add_sender_names_to_page(data: Page, auth: str) -> Page:
+    """Backfill display names for legacy message history without sender_name."""
+    from asyncio import gather
+
     sender_ids = {item.who_sent for item in data.items if not item.sender_name}
-    profiles = {}
-    for sender_id in sender_ids:
-        profiles[sender_id] = await get_user_profile(sender_id, auth)
+    sender_profiles = await gather(*(get_user_profile(sender_id, auth) for sender_id in sender_ids))
+    profiles = dict(zip(sender_ids, sender_profiles))
     items = [
-        item.model_copy(update={"sender_name": item.sender_name or profiles.get(item.who_sent, {}).get("name") or f"User {item.who_sent}"})
+        item.model_copy(update={
+            "sender_name": item.sender_name or profiles.get(item.who_sent, {}).get("name") or f"User {item.who_sent}"
+        })
         for item in data.items
     ]
     return data.model_copy(update={"items": items})
