@@ -839,7 +839,7 @@ async def delete_message(auth: str, message_id: str) -> dict:
     if deleted is None:
         raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
 
-    message = Room(**deleted).model_dump(mode="json")
+    remaining_image_ids = []
     for image_id in existing.get("image_ids") or []:
         if not image_id:
             continue
@@ -847,8 +847,18 @@ async def delete_message(auth: str, message_id: str) -> dict:
             from image_client import delete_image
             await delete_image(str(image_id))
         except Exception as exc:
+            # Keep failed IDs on the tombstone so a later cleanup can retry them.
+            remaining_image_ids.append(str(image_id))
             print(f"Could not delete image {image_id} for message {message_id}: {exc}")
 
+    if remaining_image_ids != (existing.get("image_ids") or []):
+        await rooms.update_one(
+            {"_id": existing["_id"], "is_deleted": True},
+            {"$set": {"image_ids": remaining_image_ids}},
+        )
+        deleted["image_ids"] = remaining_image_ids
+
+    message = Room(**deleted).model_dump(mode="json")
     await message_members_manager.broadcast_message(
         conversation_id,
         json.dumps({
