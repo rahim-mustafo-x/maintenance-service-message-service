@@ -291,6 +291,7 @@
         let currentToken = "";
         let currentChatId = null;
         let currentUserId = null;
+        let activeHistoryRequestId = null;
 
         const elements = {
             loginOverlay: document.getElementById('login-overlay'),
@@ -435,7 +436,12 @@
                     elements.activeChat.classList.remove('hidden');
                     break;
                 case 'MESSAGES_PAGE':
-                    renderMessages(payload.items);
+                    // Ignore delayed history responses from a previously selected chat.
+                    // Otherwise a fast click between chats can replace the visible history
+                    // with a response that belongs to the previous selection.
+                    if (request_id === activeHistoryRequestId) {
+                        renderMessages(Array.isArray(payload?.items) ? payload.items : []);
+                    }
                     break;
                 case 'MESSAGE':
                     // The sender already receives MESSAGE_SENT as its acknowledgement.
@@ -581,9 +587,10 @@
             }));
 
             // 2. Load history
+            activeHistoryRequestId = `history-${currentChatId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             socket.send(JSON.stringify({
                 type: "GET_HISTORY",
-                request_id: "req_hist",
+                request_id: activeHistoryRequestId,
                 payload: { page: 1, size: 50 }
             }));
 
