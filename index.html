@@ -292,6 +292,8 @@
         let currentChatId = null;
         let currentUserId = null;
         let activeHistoryRequestId = null;
+        // Keep each outgoing message pending until the server confirms MongoDB persistence.
+        const pendingMessageRequests = new Map();
 
         const elements = {
             loginOverlay: document.getElementById('login-overlay'),
@@ -454,14 +456,31 @@
                         loadConversations();
                     }
                     break;
-                case 'MESSAGE_SENT':
-                    // A delayed send acknowledgement must not appear in another chat.
-                    if (String(payload?.conversation_id) !== String(currentChatId)) break;
-                    appendMessage(payload, 'sent');
-                    loadConversations();
+                case 'MESSAGE_SENT': {
+                    // The server emits MESSAGE_SENT only after the MongoDB write succeeds.
+                    const pending = pendingMessageRequests.get(request_id);
+                    if (!pending) break; // Ignore duplicate or unknown acknowledgements.
+                    pendingMessageRequests.delete(request_id);
+
+                    if (String(payload?.conversation_id) === String(pending.conversationId)) {
+                        if (String(payload?.conversation_id) === String(currentChatId)) {
+                            appendMessage(payload, 'sent');
+                        }
+                        // Clear only if the user hasn't edited the composer while waiting.
+                        if (elements.msgInput.value.trim() === pending.text) {
+                            elements.msgInput.value = "";
+                        }
+                        loadConversations();
+                    }
                     break;
+                }
                 case 'ERROR':
-                    console.error("Server Error:", payload.message);
+                    if (request_id && pendingMessageRequests.has(request_id)) {
+                        // Keep the draft in the input so a failed write doesn't look successful.
+                        pendingMessageRequests.delete(request_id);
+                        alert("Xabar saqlanmadi. Matnni yo'qotmadingiz, qayta yuborishingiz mumkin.");
+                    }
+                    console.error("Server Error:", payload?.message || "Unknown error");
                     break;
             }
         }
@@ -655,15 +674,24 @@
 
         function sendMessage() {
             const text = elements.msgInput.value.trim();
-            if (!text || !socket || !currentChatId) return;
+            if (!text || !socket || socket.readyState !== WebSocket.OPEN || !currentChatId) return;
 
-            socket.send(JSON.stringify({
-                type: "SEND_MESSAGE",
-                request_id: "req_send",
-                payload: { text: text, images: [] }
-            }));
+            const requestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            pendingMessageRequests.set(requestId, { text, conversationId: currentChatId });
 
-            elements.msgInput.value = "";
+            try {
+                socket.send(JSON.stringify({
+                    type: "SEND_MESSAGE",
+                    request_id: requestId,
+                    payload: { text, images: [] }
+                }));
+                // Do not clear the composer yet. The server acknowledges only after
+                // MongoDB insert_one has completed; keep text visible if persistence fails.
+            } catch (error) {
+                pendingMessageRequests.delete(requestId);
+                console.error("Message could not be sent:", error);
+                alert("Xabar yuborilmadi. Matn saqlandi, qayta urinib ko'ring.");
+            }
         }
 
         let userSearchTimeout = null;
