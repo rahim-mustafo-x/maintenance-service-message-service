@@ -14,3 +14,7 @@ REDIS_PORT = int(getenv("REDIS_PORT") or "6379")
 #for ping-pong
 PING = b"\x01"
 PONG = b"\x02"
+# Internal Image Service URL on maintenance-net.
+IMAGE_SERVICE_URL = getenv("IMAGE_SERVICE_URL", "http://image-service:7878").rstrip("/")
+# Public gateway base including /image-service; optional override.
+IMAGE_PUBLIC_BASE_URL = getenv("IMAGE_PUBLIC_BASE_URL", "").rstrip("/")
