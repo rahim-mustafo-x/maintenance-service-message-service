@@ -1,6 +1,6 @@
 import asyncio
 from asyncio import CancelledError
-from typing import List, Optional
+from typing import List
 from uuid import uuid4
 
 from fastapi import WebSocket

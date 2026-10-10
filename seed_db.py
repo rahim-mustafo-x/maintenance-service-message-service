@@ -3,7 +3,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from repository import ConversationRepository
 from model import Conversation
 from config import MONGODB_URL
-import uuid
 
 async def seed():
     client = AsyncIOMotorClient(MONGODB_URL)

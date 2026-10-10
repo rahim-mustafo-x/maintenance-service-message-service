@@ -1,5 +1,4 @@
 import asyncio
-from typing import List, Optional
 
 from fastapi import (
     FastAPI,
@@ -8,7 +7,6 @@ from fastapi import (
     Request,
     HTTPException,
     Query,
-    Depends,
     APIRouter,
 )
 from fastapi.responses import HTMLResponse
@@ -22,11 +20,11 @@ import service
 
 _middleware = [
     Middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        CORSMiddleware,#type:ignore
+        allow_origins=["*"],#type:ignore
+        allow_credentials=True,#type:ignore
+        allow_methods=["*"],#type:ignore
+        allow_headers=["*"],#type:ignore
     )
 ]
 bearer_scheme = HTTPBearer()
