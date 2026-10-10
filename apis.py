@@ -9,7 +9,7 @@ from fastapi import (
     Query,
     APIRouter,
 )
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse,FileResponse
 from fastapi.security import HTTPBearer
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -107,3 +107,7 @@ app.include_router(v1_router)
 async def get_home():
     with open("index.html", "r") as f:
         return f.read()
+
+@app.get("/favicon.ico", response_class=FileResponse)
+async def favicon():
+    return FileResponse("favicon.ico")

@@ -1,13 +1,13 @@
 import asyncio
 from asyncio import CancelledError
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 
 from fastapi import WebSocket
 
 from config import PING, PONG, JWT_SECRET_KEY
 from connection import Presence
-from model import Session, Conversation
+from model import Session, Conversation, Page
 from websocket_manager import MessageMembersManager
 
 from jwt import (
