@@ -465,7 +465,27 @@
 
         async function renderConversations(data) {
             elements.convList.innerHTML = "";
-            const conversations = Array.isArray(data?.items) ? data.items : [];
+            const receivedConversations = Array.isArray(data?.items) ? data.items : [];
+
+            // Defensive frontend deduplication: a direct chat is identified by its
+            // two participant IDs, not by the stored name or conversation ID.
+            // Prefer the deterministic ID and then the most recently active record.
+            const conversationsByPair = new Map();
+            receivedConversations
+                .filter(conv => Array.isArray(conv.people) && conv.people.length === 2)
+                .sort((a, b) => {
+                    const aCanonical = String(a.conversation_id || '').startsWith('direct-') ? 1 : 0;
+                    const bCanonical = String(b.conversation_id || '').startsWith('direct-') ? 1 : 0;
+                    if (aCanonical !== bCanonical) return bCanonical - aCanonical;
+                    return new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+                })
+                .forEach(conv => {
+                    const pair = conv.people.map(Number).sort((a, b) => a - b);
+                    if (pair.some(id => !Number.isFinite(id))) return;
+                    const key = pair.join(':');
+                    if (!conversationsByPair.has(key)) conversationsByPair.set(key, conv);
+                });
+            const conversations = Array.from(conversationsByPair.values());
 
             if (conversations.length === 0) {
                 const empty = document.createElement('div');
@@ -541,6 +561,9 @@
             elements.headerName.textContent = displayName;
             elements.headerAvatar.textContent = displayName.charAt(0).toUpperCase();
             elements.messages.innerHTML = '';
+            document.querySelectorAll('.conv-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.conversationId === currentChatId);
+            });
 
             // 1. Open conversation context
             socket.send(JSON.stringify({
