@@ -320,9 +320,27 @@
             return `${protocol}//${host}/v1/ws/chat`;
         };
 
+        function getUserIdFromToken(token) {
+            try {
+                const rawToken = token.replace(/^Bearer\\s+/i, '');
+                const encodedPayload = rawToken.split('.')[1];
+                if (!encodedPayload) return null;
+                const base64 = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+                const payload = JSON.parse(atob(base64));
+                return Number(payload.userId) || null;
+            } catch (error) {
+                console.warn('Could not read user ID from access token', error);
+                return null;
+            }
+        }
+
         async function connect() {
             currentToken = elements.tokenInput.value.trim();
             if (!currentToken) return alert("Please enter a token");
+            currentUserId = getUserIdFromToken(currentToken);
+            if (currentUserId === null) {
+                return alert("The token does not contain a valid userId. Please use a fresh access token.");
+            }
 
             // We need an initial chat_id to connect.
             // In a real app, we might fetch the first conversation first via REST
@@ -434,7 +452,7 @@
             }));
         }
 
-        function renderConversations(data) {
+        async function renderConversations(data) {
             elements.convList.innerHTML = "";
             const conversations = Array.isArray(data?.items) ? data.items : [];
 
@@ -446,7 +464,31 @@
                 return;
             }
 
-            conversations.forEach(conv => {
+            for (const conv of conversations) {
+                // A direct conversation's stored name reflects whoever created it.
+                // Resolve the other participant for the currently authenticated user.
+                const otherUserId = Array.isArray(conv.people)
+                    ? conv.people.find(id => Number(id) !== Number(currentUserId))
+                    : null;
+                let displayName = conv.name || 'Conversation';
+                if (otherUserId != null && currentToken) {
+                    try {
+                        const profileResponse = await fetch(
+                            `/user-service/v1/user/${encodeURIComponent(otherUserId)}`,
+                            { headers: { 'Authorization': currentToken } }
+                        );
+                        if (profileResponse.ok) {
+                            const profileBody = await profileResponse.json();
+                            const profile = profileBody.data || profileBody;
+                            displayName = profile.fullName || profile.phoneNumber || displayName;
+                            conv.phoneNumber = profile.phoneNumber || null;
+                            conv.name = displayName;
+                        }
+                    } catch (error) {
+                        console.warn('Could not resolve conversation participant', error);
+                    }
+                }
+
                 const div = document.createElement('div');
                 div.className = 'conv-item';
                 div.dataset.conversationId = conv.conversation_id;
@@ -459,18 +501,27 @@
                     img.alt = '';
                     avatar.appendChild(img);
                 } else {
-                    avatar.textContent = (conv.name || '?').charAt(0).toUpperCase();
+                    avatar.textContent = displayName.charAt(0).toUpperCase();
                 }
 
+                const details = document.createElement('div');
+                details.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:.2rem;';
                 const name = document.createElement('div');
-                name.style.cssText = 'flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-                name.textContent = conv.name || 'Conversation';
+                name.style.cssText = 'font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                name.textContent = displayName;
+                details.appendChild(name);
+                if (conv.phoneNumber) {
+                    const phone = document.createElement('div');
+                    phone.style.cssText = 'font-size:.8rem;color:var(--text-muted);';
+                    phone.textContent = conv.phoneNumber;
+                    details.appendChild(phone);
+                }
 
-                div.append(avatar, name);
+                div.append(avatar, details);
                 if (conv.conversation_id === currentChatId) div.classList.add('active');
                 div.onclick = () => openConversation(conv);
                 elements.convList.appendChild(div);
-            });
+            }
         }
 
         async function openConversation(conv) {
@@ -507,11 +558,40 @@
         function appendMessage(msg, type) {
             const div = document.createElement('div');
             div.className = `message ${type}`;
-            div.innerHTML = `
-                <div>${msg.text || ""}</div>
-                ${msg.images && msg.images.length ? `<div style="display:flex; gap:5px; margin-top:5px;">${msg.images.map(img => `<img src="${img}" style="width:100px; border-radius:4px">`).join('')}</div>` : ''}
-                <div class="message-meta">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
-            `;
+
+            let messageText = typeof msg.text === 'string' ? msg.text : '';
+            // Be tolerant of messages produced by the old double-encoded broadcast.
+            try {
+                const parsed = JSON.parse(messageText);
+                if (parsed && typeof parsed === 'object') {
+                    messageText = typeof parsed.text === 'string' ? parsed.text : messageText;
+                }
+            } catch (_) {
+                // Normal user-entered text is not JSON.
+            }
+
+            const textNode = document.createElement('div');
+            textNode.textContent = messageText;
+            div.appendChild(textNode);
+
+            if (Array.isArray(msg.images) && msg.images.length) {
+                const images = document.createElement('div');
+                images.style.cssText = 'display:flex;gap:5px;margin-top:5px;';
+                msg.images.forEach(src => {
+                    const img = document.createElement('img');
+                    img.src = src;
+                    img.alt = 'Message attachment';
+                    img.style.cssText = 'width:100px;border-radius:4px;object-fit:cover;';
+                    images.appendChild(img);
+                });
+                div.appendChild(images);
+            }
+
+            const meta = document.createElement('div');
+            meta.className = 'message-meta';
+            meta.textContent = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            div.appendChild(meta);
+
             elements.messages.appendChild(div);
             elements.messages.scrollTop = elements.messages.scrollHeight;
         }
@@ -586,7 +666,9 @@
 
                     const name = document.createElement('span');
                     name.className = 'user-name';
-                    name.textContent = user.name || `User ${user.userId}`;
+                    name.textContent = user.phoneNumber
+                        ? `${user.name || 'User ' + user.userId} · ${user.phoneNumber}`
+                        : (user.name || `User ${user.userId}`);
 
                     const action = document.createElement('span');
                     action.className = 'start-label';
