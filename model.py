@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Generic, List, Optional, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatType(str, Enum):
@@ -29,7 +30,8 @@ class Conversation(BaseModel):
     conversation_id: str
     name: str
     profile_image: Optional[str] = None
-    people: List[int] = []
+    people: List[int] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Room(BaseModel):
@@ -37,7 +39,8 @@ class Room(BaseModel):
     conversation_id: str
     text: Optional[str] = None
     who_sent: int
-    images: List[str] = []
+    images: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 T = TypeVar("T")
