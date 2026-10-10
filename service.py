@@ -341,7 +341,7 @@ async def create_conversation(
     target_user = await get_user_service_data(f"/v1/user/{target_user_id}", auth)
     if not isinstance(target_user, dict) or target_user.get("id") is None:
         return None
-    target_name = target_user.get("fullName") or target_user.get("userName") or f"User {target_user_id}"
+    target_name = target_user.get("fullName") or target_user.get("phoneNumber") or f"User {target_user_id}"
 
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = ConversationRepository(client, "maintenance_service")
@@ -426,7 +426,8 @@ async def search_users(
     return [
         {
             "userId": user.get("id"),
-            "name": user.get("fullName") or user.get("userName") or f"User {user.get('id')}",
+            "name": user.get("fullName") or user.get("phoneNumber") or f"User {user.get('id')}",
+            "phoneNumber": user.get("phoneNumber"),
             "avatar": None,
         }
         for user in data
