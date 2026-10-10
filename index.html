@@ -511,9 +511,14 @@
                         if (profileResponse.ok) {
                             const profileBody = await profileResponse.json();
                             const profile = profileBody.data || profileBody;
-                            displayName = profile.fullName || profile.phoneNumber || displayName;
-                            conv.phoneNumber = profile.phoneNumber || null;
-                            conv.name = displayName;
+                            // API responses can use either id or userId. Never fall
+                            // back to the current user's name for the other participant.
+                            const profileId = profile.id ?? profile.userId;
+                            if (profileId != null && Number(profileId) === Number(otherUserId)) {
+                                displayName = profile.fullName || profile.name || profile.phoneNumber || displayName;
+                                conv.phoneNumber = profile.phoneNumber || null;
+                                conv.name = displayName;
+                            }
                         }
                     } catch (error) {
                         console.warn('Could not resolve conversation participant', error);
@@ -579,9 +584,10 @@
                 payload: { page: 1, size: 50 }
             }));
 
-            // Update active UI
-            document.querySelectorAll('.conv-item').forEach(el => el.classList.remove('active'));
-            // (Logic to mark active would go here)
+            // Keep the selected conversation highlighted.
+            document.querySelectorAll('.conv-item').forEach(el => {
+                el.classList.toggle('active', el.dataset.conversationId === currentChatId);
+            });
         }
 
         function renderMessages(messages) {
@@ -739,6 +745,9 @@
 
                 // The server stores a conversation-level display name. Use the selected
                 // user's current profile for this view so the new chat opens immediately.
+                // Keep the selected participant's name only in this UI instance.
+                // The backend's shared conversation record must not define both users'
+                // display names.
                 body.name = user.name || body.name || 'New Chat';
                 body.profile_image = user.avatar || body.profile_image || null;
                 closeNewChatModal();
