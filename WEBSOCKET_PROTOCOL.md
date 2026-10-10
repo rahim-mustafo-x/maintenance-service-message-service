@@ -94,12 +94,54 @@ When a user selects a person, the client "opens" that conversation to set the co
 ### 4. Exchanging Messages
 Messages are sent through the same WebSocket and delivered in real-time regardless of which server instance the users are connected to.
 
-**Sending a Message:**
+**Sending a text message, image message, or both:**
 ```json
 {
   "type": "SEND_MESSAGE",
   "request_id": "req_004",
-  "payload": { "text": "How are you?", "images": [] }
+  "payload": {
+    "text": "How are you?",
+    "images": ["https://image-service.example/images/abc.jpg"]
+  }
+}
+```
+
+`text` may be `null` or an empty string when at least one valid image URL is present. `images` is the canonical array of image URLs. For clients sending a single image, the service also accepts `image_url` as a convenience field. Upload the binary file through Image Service first; Message Service stores and broadcasts URLs, not image bytes.
+
+**Editing and deleting messages (REST):**
+
+- `PATCH /v1/messages/{message_id}` with `Authorization: Bearer <JWT>` updates `text`, `images`, or `image_url`. Omitted fields remain unchanged.
+- `DELETE /v1/messages/{message_id}` soft-deletes the message, clears its visible text/images, and leaves a tombstone for history synchronization.
+- Only the author can edit/delete a message. The authenticated user must still be a participant in the conversation.
+- REST writes to MongoDB first. A real-time event is published only after the database operation succeeds.
+
+**Real-time edit event:**
+```json
+{
+  "type": "message.updated",
+  "payload": {
+    "room_id": "msg_3",
+    "conversation_id": "direct-1-2",
+    "text": "Corrected text",
+    "who_sent": 123,
+    "images": ["https://image-service.example/images/abc.jpg"],
+    "is_edited": true,
+    "is_deleted": false,
+    "updated_at": "2026-10-11T00:00:00Z"
+  }
+}
+```
+
+**Real-time delete event:**
+```json
+{
+  "type": "message.deleted",
+  "payload": {
+    "room_id": "msg_3",
+    "conversation_id": "direct-1-2",
+    "is_deleted": true,
+    "deleted_at": "2026-10-11T00:00:00Z"
+  }
 }
 ```
 *Response: `MESSAGE_SENT` event.*
@@ -149,3 +191,4 @@ All errors are returned with a consistent format:
 - `MISSING_CHAT_ID`: Required `chat_id` was not provided.
 - `NO_ACTIVE_CHAT`: Tried to send a message without opening a conversation first.
 - `EMPTY_MESSAGE`: Tried to send a message with no text and no images.
+- `INVALID_IMAGES`: One or more image URLs are invalid; only absolute HTTP/HTTPS URLs are accepted.
