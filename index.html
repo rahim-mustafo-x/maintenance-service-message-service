@@ -433,7 +433,11 @@
                     renderMessages(payload.items);
                     break;
                 case 'MESSAGE':
-                    appendMessage(payload, 'received');
+                    // The sender already receives MESSAGE_SENT as its acknowledgement.
+                    // Ignore its broadcast copy to avoid duplicate own messages.
+                    if (Number(payload?.who_sent) !== Number(currentUserId)) {
+                        appendMessage(payload, 'received');
+                    }
                     break;
                 case 'MESSAGE_SENT':
                     appendMessage(payload, 'sent');
@@ -526,8 +530,10 @@
 
         async function openConversation(conv) {
             currentChatId = conv.conversation_id;
-            elements.headerName.innerText = conv.name;
-            elements.headerAvatar.innerText = conv.name[0];
+            const displayName = conv.name || 'Conversation';
+            elements.headerName.textContent = displayName;
+            elements.headerAvatar.textContent = displayName.charAt(0).toUpperCase();
+            elements.messages.innerHTML = '';
 
             // 1. Open conversation context
             socket.send(JSON.stringify({
