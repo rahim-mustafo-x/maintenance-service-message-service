@@ -298,14 +298,22 @@ async def handle_get_history(session, payload, request_id, websocket):
     }))
 
 async def get_user_service_data(path: str, auth: str):
-    """Call USER-SERVICE through Eureka, forwarding the caller's JWT."""
+    """Call USER-SERVICE through Eureka with a canonical Bearer JWT header."""
     from py_eureka_client.eureka_client import do_service_async
+
+    # USER-SERVICE's JwtFilter accepts the exact "Bearer " prefix.
+    # The message service's own decoder is more permissive, so normalize here.
+    raw_token = auth.strip()
+    if raw_token[:7].lower() == "bearer ":
+        raw_token = raw_token[7:].strip()
+    if not raw_token:
+        raise RuntimeError("Missing access token for USER-SERVICE request")
 
     response = await do_service_async(
         "USER-SERVICE",
         path,
         return_type="json",
-        headers={"Authorization": auth},
+        headers={"Authorization": f"Bearer {raw_token}"},
         timeout=5,
     )
     if not isinstance(response, dict):
