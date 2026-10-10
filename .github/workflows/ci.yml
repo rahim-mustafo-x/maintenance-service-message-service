@@ -1,0 +1,42 @@
+name: Message Service CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: ["feature/message-edit-delete-image-support"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: uv sync --no-dev
+      - name: Compile Python files
+        run: uv run python -m compileall -q .
+      - name: Run message contract tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Validate browser JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script>(.*?)</script>", html, flags=re.S)
+          if not scripts:
+              raise SystemExit("No inline script found in index.html")
+          Path("/tmp/message-service-index.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/message-service-index.js
