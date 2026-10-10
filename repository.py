@@ -183,7 +183,7 @@ class BaseMongoRepository(
             else 0
         )
 
-        cursor = self.collection.find(query).sort("updated_at", -1).skip(skips).limit(size)
+        cursor = self.collection.find(query).skip(skips).limit(size)
 
         items_list = []
         async for document in cursor:
@@ -311,12 +311,24 @@ class ConversationRepository(
         size: int,
     ) -> Page[Conversation]:
 
-        query = {
-            "people": user_id
-        }
+        if page < 1:
+            page = 1
+        if size < 1:
+            size = 10
 
-        return await self.get_page(
-            query=query,
+        query = {"people": user_id}
+        skips = size * (page - 1)
+        total_items = await self.collection.count_documents(query)
+        total_pages = (total_items + size - 1) // size if total_items else 0
+        cursor = self.collection.find(query).sort("updated_at", -1).skip(skips).limit(size)
+
+        items = []
+        async for document in cursor:
+            items.append(self.model_class(**document))
+
+        return Page(
+            items=items,
+            total_pages=total_pages,
             page=page,
             size=size,
         )
