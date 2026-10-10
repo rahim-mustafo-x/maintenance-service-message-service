@@ -13,6 +13,9 @@ This file is the implementation brief for the coding assistant. Read the current
 - Existing direct conversation IDs use the format `direct-{lowerUserId}-{higherUserId}`, for example `direct-1-2`.
 - Conversation documents contain fields such as `conversation_id`, `name`, `profile_image`, `people`, and `updated_at`.
 - Room/message documents contain fields such as `room_id`, `conversation_id`, `text`, `who_sent`, `images`, and `created_at`.
+- The canonical image field is `images: List<String>`, containing absolute image URLs returned by Image Service. Legacy documents may have no image or edit/delete metadata.
+- New optional lifecycle fields are `is_edited` (default false), `is_deleted` (default false), `updated_at`, and `deleted_at`. Read old records without requiring a destructive schema migration.
+- A message may contain text, one or more image URLs, or both. An image-only message is valid. Never persist raw image bytes/base64 in the chat document.
 - **Never drop the database or collections, truncate collections, or delete/recreate existing conversations as part of migration.**
 - Do not run automatic destructive migrations. Any data migration must be backward-compatible, idempotent, explicitly reviewed, and preceded by a verified backup.
 - Preserve existing user1/user2 conversation IDs and all historical message documents. New code must read the existing document shape.
@@ -92,6 +95,20 @@ Requirements:
 - Do not acknowledge persistence before MongoDB insert completion.
 - Validate event type, payload shape, text length, image references, pagination bounds, and conversation membership. Return structured errors instead of crashing the websocket loop.
 
+## Message edit/delete and image URL contract
+
+- Preserve `images: List<String>` as the canonical persisted and WebSocket field because existing history already uses this shape.
+- For backward/client convenience, SEND_MESSAGE may accept either `images: [url, ...]` or a single `image_url: url`; normalize both to the stored `images` array.
+- Image URLs must be absolute HTTP/HTTPS URLs, with a documented maximum of 10 images per message. Upload bytes through IMAGE-SERVICE; Message Service only stores URL references.
+- A message is valid when it has non-blank text OR at least one valid image URL. Image-only messages must work.
+- Add authenticated REST endpoints: `PATCH /v1/messages/{message_id}` and `DELETE /v1/messages/{message_id}`.
+- PATCH accepts optional `text`, `images`, or `image_url`; omitted fields remain unchanged. Validate the final message still has text or at least one image.
+- Only the authenticated message author may edit or delete. Verify conversation membership against `maintenance_service.conversations`; never trust a sender ID supplied by the client.
+- DELETE should be a soft delete: set `is_deleted=true`, set `deleted_at` and `updated_at`, and clear visible `text` and `images`. History must render a deleted-message placeholder rather than failing to deserialize the old record.
+- After the MongoDB write succeeds, publish `message.updated` or `message.deleted` through Redis Pub/Sub and WebSocket to connected participants currently viewing that conversation. Never broadcast before persistence succeeds.
+- Existing `MESSAGE` send broadcasts must remain compatible. New event names are `message.updated` and `message.deleted`; preserve `room_id`, `conversation_id`, and request/response correlation where applicable.
+- The Ktor implementation must share these exact semantics and wire fields, not invent a second `imageUrl`/attachment model.
+
 ## REST/API compatibility
 
 Inspect current endpoints and keep compatible routes and response fields where possible, including the existing conversation list, paginated messages, user search, and direct-conversation creation endpoints. Preserve the current authentication expectations and USER-SERVICE response handling. Do not guess USER-SERVICE JSON fields; verify the actual DTOs and API responses in the repository.
@@ -132,6 +149,13 @@ Follow existing project conventions if they already provide equivalent component
 - Heartbeat refreshes TTL only for the current session.
 - Old session cleanup cannot delete a newer session's presence.
 - MongoDB failure produces an error and no success acknowledgement.
+- Image-only message is accepted and persisted with `text=null` and a non-empty `images` array.
+- Invalid/non-HTTP image URLs and more than 10 images are rejected.
+- An existing text-only message remains compatible with `images=[]`.
+- Only the author can PATCH or DELETE; other participants receive 403.
+- PATCH preserves fields omitted from the request and rejects a final empty message.
+- DELETE clears visible content, sets tombstone fields, and publishes `message.deleted` only after MongoDB succeeds.
+- PATCH publishes `message.updated` only after MongoDB succeeds.
 - History serialization emits valid ISO-8601 timestamps.
 
 ### Integration tests
@@ -163,6 +187,8 @@ Follow existing project conventions if they already provide equivalent component
 
 - [ ] Existing user1/user2 history remains visible and unchanged.
 - [ ] All accepted messages are persisted before success acknowledgements.
+- [ ] Text-only, image-only, and text-plus-image messages are supported with the legacy `images` URL array.
+- [ ] PATCH/DELETE enforce author and conversation authorization and broadcast events only after persistence.
 - [ ] Refresh/reconnect reloads history from MongoDB.
 - [ ] Correct peer name is displayed for both participants, online or offline.
 - [ ] Heartbeat and Redis presence correctly enforce one active websocket per user.

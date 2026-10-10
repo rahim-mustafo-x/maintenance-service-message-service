@@ -255,67 +255,104 @@ async def handle_open_conversation(session, payload, request_id, websocket):
         "payload": {"chat_id": conversation.conversation_id}
     }))
 
+async def _validated_image_urls(images) -> list[str]:
+    """Validate image URLs returned by Image Service; never accept raw file data here."""
+    from urllib.parse import urlparse
+
+    if images is None:
+        return []
+    if not isinstance(images, list):
+        raise ValueError("images must be a list of URLs")
+    if len(images) > 10:
+        raise ValueError("A message can contain at most 10 images")
+
+    validated: list[str] = []
+    for value in images:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Each image must be a non-empty URL")
+        url = value.strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("Images must use absolute HTTP or HTTPS URLs")
+        validated.append(url)
+    return validated
+
+
 async def handle_send_message(session, payload, request_id, websocket):
-    from repository import RoomRepository
+    from repository import RoomRepository, ConversationRepository
     from config import MONGODB_URL
     from motor.motor_asyncio import AsyncIOMotorClient
     from model import Room
+    from datetime import datetime, timezone
     import json
 
-    text = payload.get("text")
-    images = payload.get("images", [])
-
-    if not isinstance(text, str) or not text.strip():
+    text_value = payload.get("text")
+    if text_value is not None and not isinstance(text_value, str):
         await websocket.send_text(json.dumps({
-            "type": "ERROR",
-            "request_id": request_id,
-            "payload": {"code": "EMPTY_MESSAGE", "message": "Message text cannot be empty"}
+            "type": "ERROR", "request_id": request_id,
+            "payload": {"code": "INVALID_MESSAGE", "message": "text must be a string or null"}
         }))
         return
-    if not isinstance(images, list):
-        images = []
+    text_value = text_value.strip() if isinstance(text_value, str) else None
+
+    # Accept both the existing images[] contract and a single image_url convenience field.
+    raw_images = payload.get("images")
+    if raw_images is None:
+        raw_images = []
+    if payload.get("image_url"):
+        if not isinstance(raw_images, list):
+            raw_images = []
+        raw_images = [*raw_images, payload["image_url"]]
+
+    try:
+        images = await _validated_image_urls(raw_images)
+    except ValueError as exc:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR", "request_id": request_id,
+            "payload": {"code": "INVALID_IMAGES", "message": str(exc)}
+        }))
+        return
+
+    if not text_value and not images:
+        await websocket.send_text(json.dumps({
+            "type": "ERROR", "request_id": request_id,
+            "payload": {"code": "EMPTY_MESSAGE", "message": "Message text or at least one image is required"}
+        }))
+        return
 
     if not session.chat_id:
         await websocket.send_text(json.dumps({
-            "type": "ERROR",
-            "request_id": request_id,
+            "type": "ERROR", "request_id": request_id,
             "payload": {"code": "NO_ACTIVE_CHAT", "message": "No conversation opened"}
         }))
         return
 
-    # Validate membership on every send, not just when the chat is opened.
     conversation = await get_authorized_conversation(session.user_id, session.chat_id)
     if conversation is None:
         session.chat_id = None
         await websocket.send_text(json.dumps({
-            "type": "ERROR",
-            "request_id": request_id,
+            "type": "ERROR", "request_id": request_id,
             "payload": {"code": "CONVERSATION_FORBIDDEN", "message": "Conversation not found or you are not a participant"}
         }))
         return
 
-    # 1. Persist to DB
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = RoomRepository(client, "maintenance_service")
-
-    room_id = str(uuid4())
     room = Room(
-        room_id=room_id,
+        room_id=str(uuid4()),
         conversation_id=session.chat_id,
-        text=text,
+        text=text_value or None,
         who_sent=session.user_id,
-        images=images
+        images=images,
     )
     await repo.add(room)
-    from repository import ConversationRepository
+
     conversation_repo = ConversationRepository(client, "maintenance_service")
-    from datetime import datetime, timezone
     await conversation_repo.update_fields(
         session.chat_id,
         {"updated_at": datetime.now(timezone.utc)}
     )
 
-    # 2. Broadcast via Redis
     msg_json = json.dumps(room.model_dump(mode="json"))
     await message_members_manager.broadcast_message(session.chat_id, msg_json)
 
@@ -324,6 +361,7 @@ async def handle_send_message(session, payload, request_id, websocket):
         "request_id": request_id,
         "payload": room.model_dump(mode="json")
     }))
+
 
 async def handle_get_history(session, payload, request_id, websocket):
     from repository import RoomRepository
@@ -619,3 +657,144 @@ async def search_users(
         for user in data
         if isinstance(user, dict) and user.get("id") is not None
     ]
+
+
+async def edit_message(auth: str, message_id: str, request: "EditMessageRequest") -> dict:
+    """Edit a message only by its author; publish a real-time event after MongoDB succeeds."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from pymongo import ReturnDocument
+    from config import MONGODB_URL
+    from model import Room
+    import json
+
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    updates: dict = {}
+    if request.text is not None:
+        if not isinstance(request.text, str):
+            raise HTTPException(status_code=422, detail="text must be a string")
+        updates["text"] = request.text.strip() or None
+
+    image_values = request.images
+    if request.image_url is not None:
+        if image_values is not None:
+            raise HTTPException(status_code=422, detail="Use either images or image_url, not both")
+        image_values = [request.image_url]
+
+    if image_values is not None:
+        try:
+            updates["images"] = await _validated_image_urls(image_values)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not updates:
+        raise HTTPException(status_code=422, detail="Provide text, images, or image_url to update")
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    rooms = client["maintenance_service"]["rooms"]
+    existing = await rooms.find_one({"$or": [{"_id": message_id}, {"room_id": message_id}]})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if existing.get("is_deleted", False):
+        raise HTTPException(status_code=410, detail="Message has been deleted")
+    if existing.get("who_sent") != user_id:
+        raise HTTPException(status_code=403, detail="Only the message author can edit it")
+
+    conversation_id = existing.get("conversation_id")
+    conversation = await get_authorized_conversation(user_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=403, detail="Conversation not found or access denied")
+
+    final_text = updates.get("text", existing.get("text"))
+    final_images = updates.get("images", existing.get("images") or [])
+    if not final_text and not final_images:
+        raise HTTPException(status_code=422, detail="A message must contain text or at least one image")
+
+    now = datetime.now(timezone.utc)
+    updates.update({"is_edited": True, "updated_at": now})
+    updated = await rooms.find_one_and_update(
+        {"_id": existing["_id"], "who_sent": user_id, "is_deleted": {"$ne": True}},
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
+
+    message = Room(**updated).model_dump(mode="json")
+    await message_members_manager.broadcast_message(
+        conversation_id,
+        json.dumps({
+            "room_id": message["room_id"],
+            "conversation_id": conversation_id,
+            "text": message.get("text"),
+            "who_sent": message["who_sent"],
+            "images": message.get("images", []),
+            "is_edited": True,
+            "is_deleted": False,
+            "updated_at": message.get("updated_at"),
+        }),
+        event_type="message.updated",
+    )
+    return message
+
+
+async def delete_message(auth: str, message_id: str) -> dict:
+    """Soft-delete a message, clearing user-visible content and retaining a tombstone."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from pymongo import ReturnDocument
+    from config import MONGODB_URL
+    from model import Room
+    import json
+
+    user_id = user_id_from_auth(auth)
+    if user_id == -1:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    client = AsyncIOMotorClient(MONGODB_URL)
+    rooms = client["maintenance_service"]["rooms"]
+    existing = await rooms.find_one({"$or": [{"_id": message_id}, {"room_id": message_id}]})
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if existing.get("is_deleted", False):
+        raise HTTPException(status_code=410, detail="Message has already been deleted")
+    if existing.get("who_sent") != user_id:
+        raise HTTPException(status_code=403, detail="Only the message author can delete it")
+
+    conversation_id = existing.get("conversation_id")
+    conversation = await get_authorized_conversation(user_id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=403, detail="Conversation not found or access denied")
+
+    now = datetime.now(timezone.utc)
+    deleted = await rooms.find_one_and_update(
+        {"_id": existing["_id"], "who_sent": user_id, "is_deleted": {"$ne": True}},
+        {"$set": {
+            "text": None,
+            "images": [],
+            "is_deleted": True,
+            "deleted_at": now,
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if deleted is None:
+        raise HTTPException(status_code=409, detail="Message changed or deleted concurrently")
+
+    message = Room(**deleted).model_dump(mode="json")
+    await message_members_manager.broadcast_message(
+        conversation_id,
+        json.dumps({
+            "room_id": message["room_id"],
+            "conversation_id": conversation_id,
+            "is_deleted": True,
+            "deleted_at": message.get("deleted_at"),
+        }),
+        event_type="message.deleted",
+    )
+    return message

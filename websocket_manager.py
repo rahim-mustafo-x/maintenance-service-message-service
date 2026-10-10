@@ -98,14 +98,16 @@ class MessageMembersManager:
     async def broadcast_message(
         self,
         chat_id: str,
-        message: str
+        message: str,
+        event_type: str = "MESSAGE",
     ) -> None:
         """
         Publishes a message to the global Redis broadcast channel.
         """
         payload = {
             "chat_id": chat_id,
-            "message": message
+            "message": message,
+            "event_type": event_type,
         }
         import json
         await self.redis.publish(
@@ -149,6 +151,7 @@ class MessageMembersManager:
                             payload = json.loads(data)
                             chat_id = payload["chat_id"]
                             raw_message = payload["message"]
+                            event_type = payload.get("event_type", "MESSAGE")
                             # The publisher stores the message as JSON; decode it once
                             # so clients receive the actual message fields, not escaped JSON.
                             msg_payload = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
@@ -163,7 +166,7 @@ class MessageMembersManager:
                                     and member_session.chat_id == chat_id
                                 ):
                                     await member[0].send_text(json.dumps({
-                                        "type": "MESSAGE",
+                                        "type": event_type,
                                         "payload": msg_payload
                                     }))
                         except Exception as e:
