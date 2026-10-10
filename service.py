@@ -944,6 +944,8 @@ async def delete_message(auth: str, message_id: str) -> dict:
         json.dumps({
             "room_id": message["room_id"],
             "conversation_id": conversation_id,
+            "who_sent": message["who_sent"],
+            "sender_name": message.get("sender_name") or f"User {message['who_sent']}",
             "is_deleted": True,
             "deleted_at": message.get("deleted_at"),
         }),
