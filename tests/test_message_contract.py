@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from model import EditMessageRequest, Room
+from model import EditMessageRequest, ImageCleanupRequest, Room
 from service import _validated_image_urls
 
 
@@ -25,9 +25,28 @@ class MessageContractTests(unittest.TestCase):
             text=None,
             who_sent=1,
             images=["https://images.example.test/a.jpg"],
+            image_ids=["01234567-89ab-cdef-0123-456789abcdef"],
         )
         self.assertIsNone(message.text)
         self.assertEqual(len(message.images), 1)
+        self.assertEqual(len(message.image_ids), 1)
+
+    def test_legacy_image_urls_can_have_no_managed_image_id(self):
+        message = Room(
+            room_id="legacy-image",
+            conversation_id="direct-1-2",
+            text=None,
+            who_sent=1,
+            images=["https://legacy.example.test/image.jpg"],
+            image_ids=[None],
+        )
+        self.assertIsNone(message.image_ids[0])
+
+    def test_cleanup_request_limits_image_count(self):
+        request = ImageCleanupRequest(image_ids=[
+            "01234567-89ab-cdef-0123-456789abcdef"
+        ])
+        self.assertEqual(len(request.image_ids), 1)
 
     def test_edit_request_accepts_text_and_images(self):
         request = EditMessageRequest(
