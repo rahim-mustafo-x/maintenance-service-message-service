@@ -44,6 +44,8 @@ jobs:
               IdentitiesOnly yes
               ProxyCommand env CLOUDFLARE_ACCESS_CLIENT_ID="$CLOUDFLARE_ACCESS_CLIENT_ID" CLOUDFLARE_ACCESS_CLIENT_SECRET="$CLOUDFLARE_ACCESS_CLIENT_SECRET" cloudflared access ssh --hostname %h
               StrictHostKeyChecking no
+              ServerAliveInterval 60
+              ServerAliveCountMax 10
           EOF
 
           chmod 600 ~/.ssh/config
