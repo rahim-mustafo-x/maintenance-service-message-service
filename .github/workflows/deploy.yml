@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-
   workflow_dispatch:
 
 permissions:
@@ -24,8 +23,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl -fsSL \
-            --retry 3 \
+          curl -fsSL --retry 3 \
             --output cloudflared.deb \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 
@@ -42,9 +40,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          : "${DEPLOY_SSH_KEY_B64:?Missing DEPLOY_SSH_KEY_B64 secret}"
-          : "${DEPLOY_HOST:?Missing DEPLOY_HOST secret}"
-          : "${DEPLOY_USER:?Missing DEPLOY_USER secret}"
+          : "${DEPLOY_SSH_KEY_B64:?Missing DEPLOY_SSH_KEY_B64}"
+          : "${DEPLOY_HOST:?Missing DEPLOY_HOST}"
+          : "${DEPLOY_USER:?Missing DEPLOY_USER}"
           : "${CLOUDFLARE_ACCESS_CLIENT_ID:?Missing Cloudflare Access client ID}"
           : "${CLOUDFLARE_ACCESS_CLIENT_SECRET:?Missing Cloudflare Access client secret}"
 
@@ -55,7 +53,6 @@ jobs:
             | base64 --decode > "$HOME/.ssh/deploy_key"
 
           chmod 600 "$HOME/.ssh/deploy_key"
-
           ssh-keygen -y -f "$HOME/.ssh/deploy_key" > /dev/null
 
           cat > "$HOME/.ssh/config" <<EOF
@@ -81,7 +78,6 @@ jobs:
       - name: Test SSH connection
         run: |
           set -euo pipefail
-
           ssh deploy-server "echo 'SSH connection successful'"
 
       - name: Validate deployment configuration
@@ -104,7 +100,7 @@ jobs:
           : "${REDIS_HOST:?Missing MESSAGE_REDIS_HOST secret}"
           : "${REDIS_PORT:?Missing MESSAGE_REDIS_PORT secret}"
 
-          if ! [[ "$PORT" =~ ^[0-9]+$ ]] || \
+          if ! [[ "$PORT" =~ ^[0-9]+$ ]] ||
              [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
             echo "Invalid message service port"
             exit 1
@@ -117,11 +113,6 @@ jobs:
 
           if [ "$REDIS_PORT" != "6379" ]; then
             echo "REDIS_PORT must be 6379"
-            exit 1
-          fi
-
-          if [ "$APP_NAME" != "message-service" ]; then
-            echo "Unexpected APP_NAME"
             exit 1
           fi
 
@@ -143,7 +134,6 @@ jobs:
           python3 - <<'PY' | ssh deploy-server 'bash -s'
           import os
           import shlex
-          import sys
 
           names = (
               "PORT",
@@ -158,10 +148,102 @@ jobs:
           for name in names:
               value = os.environ.get(name, "")
               if not value:
-                  raise SystemExit(f"Missing required environment variable: {name}")
-              print(f"{name}={shlex.quote(value)}")
-          PY
+                  raise SystemExit(f"Missing required variable: {name}")
+              print(f"export {name}={shlex.quote(value)}")
 
-          # Configuration is supplied through stdin as shell-quoted
-          # assignments. The remote script itself is sent separately below.
-          echo "This step should be replaced by the remote deployment block below."
+          print(r'''
+          set -euo pipefail
+
+          cd /opt/maintenance-service-message-service
+
+          echo "Updating repository..."
+          git fetch origin master
+          git reset --hard origin/master
+
+          echo "Generating environment configuration..."
+          umask 077
+
+          cat > .env <<ENV_EOF
+          PORT=$PORT
+          EUREKA_URL=$EUREKA_URL
+          JWT_SECRET_KEY=$JWT_SECRET_KEY
+          MONGODB_URL=$MONGODB_URL
+          REDIS_HOST=$REDIS_HOST
+          REDIS_PORT=$REDIS_PORT
+          APP_NAME=$APP_NAME
+          ENV_EOF
+
+          chmod 600 .env
+
+          echo "Checking shared Redis container..."
+          docker inspect maintenance-redis >/dev/null
+
+          if [ "$(docker inspect -f '{{.State.Running}}' maintenance-redis)" != "true" ]; then
+              echo "The maintenance-redis container is not running."
+              exit 1
+          fi
+
+          if ! docker network inspect maintenance-net \
+              --format '{{json .Containers}}' | grep -q 'maintenance-redis'; then
+              docker network connect maintenance-net maintenance-redis
+          fi
+
+          echo "Validating Docker Compose configuration..."
+          docker compose config -q
+
+          echo "Building message service..."
+          docker compose build --pull message-service
+
+          echo "Recreating message service..."
+          docker compose up -d --force-recreate message-service
+
+          echo "Waiting for container startup..."
+          for i in $(seq 1 30); do
+              if [ "$(docker inspect -f '{{.State.Running}}' message-service 2>/dev/null || true)" = "true" ]; then
+                  break
+              fi
+              sleep 2
+          done
+
+          if [ "$(docker inspect -f '{{.State.Running}}' message-service 2>/dev/null || true)" != "true" ]; then
+              echo "Message service failed to start."
+              docker compose logs --tail=100 message-service
+              exit 1
+          fi
+
+          echo "Verifying Redis environment inside container..."
+          docker exec message-service python -c \
+              'import os,sys; h=os.getenv("REDIS_HOST",""); p=os.getenv("REDIS_PORT",""); print(f"REDIS_HOST configured: {bool(h)}; REDIS_PORT configured: {bool(p)}"); sys.exit(0 if h == "maintenance-redis" and p == "6379" else 1)'
+
+          echo "Checking Redis connectivity from message service..."
+          docker exec message-service python -c '
+          import asyncio, os
+          from redis.asyncio import Redis
+
+          async def main():
+              client = Redis(
+                  host=os.environ["REDIS_HOST"],
+                  port=int(os.environ["REDIS_PORT"]),
+                  socket_connect_timeout=5,
+              )
+              try:
+                  result = await client.ping()
+                  print("Redis PING:", result)
+              finally:
+                  await client.aclose()
+
+          asyncio.run(main())
+          '
+
+          echo "Removing unused Docker images..."
+          docker image prune -f
+
+          echo "Container status:"
+          docker compose ps
+
+          echo "Recent service logs:"
+          docker compose logs --tail=50 message-service
+
+          echo "Deployment completed."
+          ''')
+          PY
