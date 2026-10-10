@@ -501,7 +501,10 @@
                 const otherUserId = Array.isArray(conv.people)
                     ? conv.people.find(id => Number(id) !== Number(currentUserId))
                     : null;
-                let displayName = conv.name || 'Conversation';
+                // Conversation.name is shared by both participants, so it cannot
+                // reliably identify the other person. Derive the label from people[].
+                let displayName = otherUserId != null ? `User ${otherUserId}` : 'Conversation';
+                conv.phoneNumber = null;
                 if (otherUserId != null && currentToken) {
                     try {
                         const profileResponse = await fetch(
@@ -510,20 +513,20 @@
                         );
                         if (profileResponse.ok) {
                             const profileBody = await profileResponse.json();
-                            const profile = profileBody.data || profileBody;
-                            // API responses can use either id or userId. Never fall
-                            // back to the current user's name for the other participant.
-                            const profileId = profile.id ?? profile.userId;
-                            if (profileId != null && Number(profileId) === Number(otherUserId)) {
+                            const profile = profileBody?.data || profileBody;
+                            const profileId = profile?.id ?? profile?.userId ?? profile?.user_id;
+                            // Only accept the profile if it belongs to the expected peer.
+                            // Never display the logged-in user's profile as the chat peer.
+                            if (profile && (profileId == null || Number(profileId) === Number(otherUserId))) {
                                 displayName = profile.fullName || profile.name || profile.phoneNumber || displayName;
                                 conv.phoneNumber = profile.phoneNumber || null;
-                                conv.name = displayName;
                             }
                         }
                     } catch (error) {
                         console.warn('Could not resolve conversation participant', error);
                     }
                 }
+                conv.name = displayName;
 
                 const div = document.createElement('div');
                 div.className = 'conv-item';
