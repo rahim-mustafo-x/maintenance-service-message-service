@@ -13,7 +13,7 @@ This file is the implementation brief for the coding assistant. Read the current
 - Existing direct conversation IDs use the format `direct-{lowerUserId}-{higherUserId}`, for example `direct-1-2`.
 - Conversation documents contain fields such as `conversation_id`, `name`, `profile_image`, `people`, and `updated_at`.
 - Room/message documents contain fields such as `room_id`, `conversation_id`, `text`, `who_sent`, `images`, and `created_at`.
-- The canonical image field is `images: List<String>`, containing absolute image URLs returned by Image Service. Legacy documents may have no image or edit/delete metadata.
+- The canonical image field is `images: List<String>`, containing absolute Image Service URLs. New messages also store `image_ids: List<String>` with the UUIDs returned by Image Service so associated files can be deleted safely. Legacy documents may have no image or edit/delete metadata.
 - New optional lifecycle fields are `is_edited` (default false), `is_deleted` (default false), `updated_at`, and `deleted_at`. Read old records without requiring a destructive schema migration.
 - A message may contain text, one or more image URLs, or both. An image-only message is valid. Never persist raw image bytes/base64 in the chat document.
 - **Never drop the database or collections, truncate collections, or delete/recreate existing conversations as part of migration.**
@@ -99,12 +99,12 @@ Requirements:
 
 - Preserve `images: List<String>` as the canonical persisted and WebSocket field because existing history already uses this shape.
 - For backward/client convenience, SEND_MESSAGE may accept either `images: [url, ...]` or a single `image_url: url`; normalize both to the stored `images` array.
-- Image URLs must be absolute HTTP/HTTPS URLs, with a documented maximum of 10 images per message. Upload bytes through IMAGE-SERVICE; Message Service only stores URL references.
+- The user selects local image files; never ask the user to paste or type image URLs. `POST /v1/messages/images` accepts multipart `files`, validates image MIME types and a 10 MiB per-file limit (maximum 10 images), then forwards each file to Image Service `POST /v1/image` with the authenticated Bearer token, `ownerId`, and `imageType=SERVICE`. Build the public display URL from the returned UUID. Store the returned URLs in `images` and UUIDs in `image_ids`; never persist raw bytes/base64.
 - A message is valid when it has non-blank text OR at least one valid image URL. Image-only messages must work.
 - Add authenticated REST endpoints: `PATCH /v1/messages/{message_id}` and `DELETE /v1/messages/{message_id}`.
 - PATCH accepts optional `text`, `images`, or `image_url`; omitted fields remain unchanged. Validate the final message still has text or at least one image.
 - Only the authenticated message author may edit. Any authenticated participant in the same direct conversation may delete a message. Verify conversation membership against `maintenance_service.conversations`; never trust a sender ID supplied by the client.
-- DELETE should be a soft delete: set `is_deleted=true`, set `deleted_at` and `updated_at`, and clear visible `text` and `images`. History must render a deleted-message placeholder rather than failing to deserialize the old record.
+- DELETE should be a soft delete: set `is_deleted=true`, set `deleted_at` and `updated_at`, and clear visible `text` and `images`. Then delete associated Image Service assets using their UUIDs, after confirming each asset's `ownerId` matches the original sender. Legacy URLs can be parsed for Image Service UUIDs when possible. History must render a deleted-message placeholder rather than failing to deserialize the old record.
 - After the MongoDB write succeeds, publish `message.updated` or `message.deleted` through Redis Pub/Sub and WebSocket to connected participants currently viewing that conversation. Never broadcast before persistence succeeds.
 - Existing `MESSAGE` send broadcasts must remain compatible. New event names are `message.updated` and `message.deleted`; preserve `room_id`, `conversation_id`, and request/response correlation where applicable.
 - The Ktor implementation must share these exact semantics and wire fields, not invent a second `imageUrl`/attachment model.
@@ -149,7 +149,9 @@ Follow existing project conventions if they already provide equivalent component
 - Heartbeat refreshes TTL only for the current session.
 - Old session cleanup cannot delete a newer session's presence.
 - MongoDB failure produces an error and no success acknowledgement.
-- Image-only message is accepted and persisted with `text=null` and a non-empty `images` array.
+- Image-only message is accepted and persisted with `text=null`, a non-empty `images` array, and matching Image Service `image_ids`.
+- Uploading local files automatically stores them in Image Service and does not expose a URL-entry field in the UI.
+- Deleting a message deletes its associated Image Service assets, but never assets whose owner differs from the message sender.
 - Invalid/non-HTTP image URLs and more than 10 images are rejected.
 - An existing text-only message remains compatible with `images=[]`.
 - Only the author can PATCH. Either participant in the direct conversation can DELETE; users outside the conversation receive 403.
