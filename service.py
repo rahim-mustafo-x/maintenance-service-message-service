@@ -723,7 +723,17 @@ async def messages(
     from motor.motor_asyncio import AsyncIOMotorClient
     client = AsyncIOMotorClient(MONGODB_URL)
     repo = RoomRepository(client, "maintenance_service")
-    return await repo.get_messages(conversation_id, page, size)
+    data = await repo.get_messages(conversation_id, page, size)
+    # Backfill sender names for old messages written before sender_name was persisted.
+    sender_ids = {item.who_sent for item in data.items if not item.sender_name}
+    profiles = {}
+    for sender_id in sender_ids:
+        profiles[sender_id] = await get_user_profile(sender_id, auth)
+    items = [
+        item.model_copy(update={"sender_name": item.sender_name or profiles.get(item.who_sent, {}).get("name") or f"User {item.who_sent}"})
+        for item in data.items
+    ]
+    return data.model_copy(update={"items": items})
 
 
 async def search_users(
