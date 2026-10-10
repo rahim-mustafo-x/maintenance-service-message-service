@@ -360,7 +360,10 @@ async def handle_get_history(session, payload, request_id, websocket):
     await websocket.send_text(json.dumps({
         "type": "MESSAGES_PAGE",
         "request_id": request_id,
-        "payload": data.model_dump()
+        # Pydantic's default dump contains datetime objects, which json.dumps
+        # cannot serialize. JSON mode converts timestamps to ISO-8601 strings so
+        # the history response reaches the browser after refresh.
+        "payload": data.model_dump(mode="json")
     }))
 
 async def get_user_service_data(path: str, auth: str):
