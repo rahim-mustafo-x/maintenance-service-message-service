@@ -371,7 +371,7 @@ async def handle_send_message(session, payload, request_id, websocket):
         text=text_value or None,
         who_sent=session.user_id,
         images=images,
-        image_ids=[str(value) for value in raw_image_ids],
+        image_ids=[str(value) if value else None for value in raw_image_ids],
     )
     await repo.add(room)
 
@@ -718,7 +718,7 @@ async def edit_message(auth: str, message_id: str, request: "EditMessageRequest"
     if image_values is not None:
         try:
             updates["images"] = await _validated_image_urls(image_values)
-            new_image_ids = [str(value) for value in (request.image_ids or [])]
+            new_image_ids = [str(value) if value else None for value in (request.image_ids or [])]
             if new_image_ids:
                 if len(new_image_ids) != len(updates["images"]):
                     raise ValueError("Each uploaded image ID must have exactly one corresponding image")
